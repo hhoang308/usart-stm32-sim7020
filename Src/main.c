@@ -21,7 +21,11 @@
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
-
+#include "string.h"
+#include "stdbool.h"
+#include "Module.h"
+#include "ATCommandList.h"
+#include "Parameter.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -31,6 +35,7 @@
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
+
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -40,23 +45,17 @@
 
 /* Private variables ---------------------------------------------------------*/
 UART_HandleTypeDef huart2;
+DMA_HandleTypeDef hdma_usart2_rx;
+DMA_HandleTypeDef hdma_usart2_tx;
 
 /* USER CODE BEGIN PV */
-char dataReceive[10];
-uint8_t size = 20;
-uint8_t * u8_RxBuff;
 
-// uint8_t u8_RxBuff[20];
-uint8_t _rxIndex = 0;
-uint8_t u8_RxData;
-// uint8_t u8_TxBuff[20];
-uint8_t u8_TxBuff[20];
-uint16_t Tx_Flag = 0;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
 void SystemClock_Config(void);
 static void MX_GPIO_Init(void);
+static void MX_DMA_Init(void);
 static void MX_USART2_UART_Init(void);
 /* USER CODE BEGIN PFP */
 
@@ -65,29 +64,97 @@ static void MX_USART2_UART_Init(void);
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
 
+#define RESPONSE_BUFFER_SIZE 256
 
+uint16_t oldPos = 0;
+uint16_t newPos = 0;
+bool passivelyListen;
+bool responseReceived;
+StatusType commandResponseStatus;
 
-void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
+char responseReceiveBuffer[RESPONSE_BUFFER_SIZE];
+char responseMainBuffer[RESPONSE_BUFFER_SIZE];
+
+void resetDMAInterrupt(){
+	HAL_UARTEx_ReceiveToIdle_DMA(&huart2, (uint8_t *) responseReceiveBuffer, RESPONSE_BUFFER_SIZE);
+	__HAL_DMA_DISABLE_IT(&hdma_usart2_rx, DMA_IT_HT);
+}
+
+void clearMainBuffer() {
+	for (int i = 0; i < RESPONSE_BUFFER_SIZE; i++) {
+		responseMainBuffer[i] = 0;
+	}
+	oldPos = 0;
+	newPos = 0;
+}
+
+/**
+  * @brief  Reception Event Callback (Rx event notification called after use of advanced reception service).
+  * @param  huart UART handle
+  * @param  Size  Number of data available in application reception buffer (indicates a position in
+  *               reception buffer until which, data are available)
+  * @retval None
+  */
+void HAL_UARTEx_RxEventCallback(UART_HandleTypeDef *huart, uint16_t Size) 
 {
   /* Prevent unused argument(s) compilation warning */
-	// strcpy(dataReceive,"");
-  // HAL_UART_Receive_IT(&huart2, (uint8_t *) dataReceive, 10);
   if(huart->Instance == USART2){
-		if(u8_RxData != 13)
+		char *success_ptr;
+		char *error_ptr;
+		
+		oldPos = newPos;  // Update the last position before copying new data
+
+		/* If the data in large and it is about to exceed the buffer size, we have to route it to the start of the buffer
+		 * This is to maintain the circular buffer
+		 * The old data in the main buffer will be overlapped
+		 */
+		if (oldPos+Size > RESPONSE_BUFFER_SIZE)  // If the current position + new data size is greater than the main buffer
 		{
-			_rxIndex++;
-			u8_RxBuff[_rxIndex] = u8_RxData;
+			clearMainBuffer();
 		}
-		else if(u8_RxData == 13){
-			_rxIndex = 0;
-			Tx_Flag = 1;
+
+		/* if the current position + new data size is less than the main buffer
+		 * we will simply copy the data into the buffer and update the position
+		 */
+		else
+		{
+			memcpy ((uint8_t *)responseMainBuffer+oldPos, responseReceiveBuffer, Size);
+			newPos = Size+oldPos;
 		}
-		HAL_UART_Receive_IT(&huart2, &u8_RxData, 1);
+	/* Checking passively listen */
+	if(passivelyListen){
+		
+	}	
+		
+	/* Checking completion of command */
+	for(int i = 0; i < ERROR_RESPONSE_LENGTH; i++){
+		error_ptr = strstr(responseMainBuffer, ERROR_COMMAND_SIGN[i]);
+		if(error_ptr != NULL){
+			commandResponseStatus = STATUS_ERROR;
+			responseReceived = true;
+			clearMainBuffer();
+			return;
+		}
 	}
-	/* NOTE: This function should not be modified, when the callback is needed,
-           the HAL_UART_RxCpltCallback could be implemented in the user file
+	for(int i = 0; i < SUCCESS_RESPONSE_LENGTH; i++){
+		success_ptr = strstr(responseMainBuffer, SUCCESS_COMMAND_SIGN[i]);
+		if(success_ptr != NULL){
+			commandResponseStatus = STATUS_SUCCESS;
+			responseReceived = true;
+			clearMainBuffer();
+			return;
+		}
+	}
+
+	/* start the DMA again */
+	resetDMAInterrupt();
+		
+	}
+  /* NOTE : This function should not be modified, when the callback is needed,
+            the HAL_UARTEx_RxEventCallback can be implemented in the user file.
    */
 }
+
 /* USER CODE END 0 */
 
 /**
@@ -97,7 +164,7 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
 int main(void)
 {
   /* USER CODE BEGIN 1 */
-	u8_RxBuff = (uint8_t *) malloc(size);
+
   /* USER CODE END 1 */
 
   /* MCU Configuration--------------------------------------------------------*/
@@ -118,12 +185,10 @@ int main(void)
 
   /* Initialize all configured peripherals */
   MX_GPIO_Init();
+  MX_DMA_Init();
   MX_USART2_UART_Init();
   /* USER CODE BEGIN 2 */
-	char dataSend[100];
-  // strcpy(dataSend, "Hello World!"); 	
-	// HAL_UART_Transmit_IT(&huart2, (uint8_t *) dataSend, strlen(dataSend));
-	HAL_UART_Receive_IT(&huart2, &u8_RxData, 1);
+	
 	
   /* USER CODE END 2 */
 
@@ -204,6 +269,25 @@ static void MX_USART2_UART_Init(void)
   /* USER CODE BEGIN USART2_Init 2 */
 
   /* USER CODE END USART2_Init 2 */
+
+}
+
+/**
+  * Enable DMA controller clock
+  */
+static void MX_DMA_Init(void)
+{
+
+  /* DMA controller clock enable */
+  __HAL_RCC_DMA1_CLK_ENABLE();
+
+  /* DMA interrupt init */
+  /* DMA1_Channel6_IRQn interrupt configuration */
+  HAL_NVIC_SetPriority(DMA1_Channel6_IRQn, 0, 0);
+  HAL_NVIC_EnableIRQ(DMA1_Channel6_IRQn);
+  /* DMA1_Channel7_IRQn interrupt configuration */
+  HAL_NVIC_SetPriority(DMA1_Channel7_IRQn, 0, 0);
+  HAL_NVIC_EnableIRQ(DMA1_Channel7_IRQn);
 
 }
 

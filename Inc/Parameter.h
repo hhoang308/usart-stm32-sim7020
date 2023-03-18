@@ -2,7 +2,7 @@
 #define PARAMETER_H_
 
 typedef enum StatusType {
-	STATUS_SUCCESS = 0, /**< The operation was successful. */
+	STATUS_SUCCESS, /**< The operation was successful. */
 	STATUS_ERROR, /**< The operation was fail. */
 	STATUS_MODEM_NOT_READY, /**< The modem is not ready yet. */
 	STATUS_TIMEOUT, /**< The operation timed out. */
