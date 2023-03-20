@@ -21,5 +21,8 @@ static const char *PASSIVE_RESPONSE_SIGN[] = { "NORMAL POWER DOWN",
 #define PASSIVE_RESPONSE_LENGTH (sizeof(PASSIVE_RESPONSE_SIGN) / sizeof(PASSIVE_RESPONSE_SIGN[0]))
 #endif
 
+#ifndef COMMAND_DELAY_MS
+#define COMMAND_DELAY_MS 600
+#endif
 
 #endif /* MODULE */

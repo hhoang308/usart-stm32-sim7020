@@ -88,6 +88,31 @@ void clearMainBuffer() {
 	newPos = 0;
 }
 
+void sendCommand(char* command, uint8_t maxCount, uint32_t timeout){
+	uint8_t counter = 0;
+	uint32_t timer;
+	
+	while(counter++ < maxCount){
+		clearMainBuffer();
+		resetDMAInterrupt();
+		timer = HAL_GetTick();
+		responseReceived = false;
+		commandResponseStatus = STATUS_TIMEOUT;
+		HAL_UART_Transmit(&huart2, (uint8_t *) command, (uint16_t) strlen(command), timeout);
+		HAL_UART_Transmit(&huart2, (uint8_t *) "\r\n", (uint16_t) strlen(command), timeout);
+		while(HAL_GetTick() - timer <= timeout){
+			if(responseReceived == true){
+				break;
+			}
+		}
+		if(commandResponseStatus == STATUS_SUCCESS){
+			break;
+		}
+		clearMainBuffer();
+		HAL_Delay(COMMAND_DELAY_MS);
+	}
+}
+
 /**
   * @brief  Reception Event Callback (Rx event notification called after use of advanced reception service).
   * @param  huart UART handle
