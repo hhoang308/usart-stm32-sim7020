@@ -46,7 +46,6 @@
 /* Private variables ---------------------------------------------------------*/
 UART_HandleTypeDef huart2;
 DMA_HandleTypeDef hdma_usart2_rx;
-DMA_HandleTypeDef hdma_usart2_tx;
 
 /* USER CODE BEGIN PV */
 
@@ -65,6 +64,8 @@ static void MX_USART2_UART_Init(void);
 /* USER CODE BEGIN 0 */
 
 #define RESPONSE_BUFFER_SIZE 256
+#define RUN_COMMAND_COUNTER_DEFAULT 4
+#define RUN_COMMAND_TIMEOUT_MS_DEFAULT 1500
 
 uint16_t oldPos = 0;
 uint16_t newPos = 0;
@@ -74,6 +75,13 @@ StatusType commandResponseStatus;
 
 char responseReceiveBuffer[RESPONSE_BUFFER_SIZE];
 char responseMainBuffer[RESPONSE_BUFFER_SIZE];
+
+void wakeUpModule(){
+	/* Pull Down PWR Key*/
+	
+	/* Delay 800ms */
+	
+}
 
 void resetDMAInterrupt(){
 	HAL_UARTEx_ReceiveToIdle_DMA(&huart2, (uint8_t *) responseReceiveBuffer, RESPONSE_BUFFER_SIZE);
@@ -146,6 +154,10 @@ void HAL_UARTEx_RxEventCallback(UART_HandleTypeDef *huart, uint16_t Size)
 			memcpy ((uint8_t *)responseMainBuffer+oldPos, responseReceiveBuffer, Size);
 			newPos = Size+oldPos;
 		}
+		
+	/* start the DMA again */
+	resetDMAInterrupt();
+		
 	/* Checking passively listen */
 	if(passivelyListen){
 		
@@ -158,26 +170,71 @@ void HAL_UARTEx_RxEventCallback(UART_HandleTypeDef *huart, uint16_t Size)
 			commandResponseStatus = STATUS_ERROR;
 			responseReceived = true;
 			clearMainBuffer();
-			return;
+			break;
 		}
 	}
+	
 	for(int i = 0; i < SUCCESS_RESPONSE_LENGTH; i++){
 		success_ptr = strstr(responseMainBuffer, SUCCESS_COMMAND_SIGN[i]);
 		if(success_ptr != NULL){
 			commandResponseStatus = STATUS_SUCCESS;
 			responseReceived = true;
 			clearMainBuffer();
-			return;
+			break;
 		}
 	}
-
-	/* start the DMA again */
-	resetDMAInterrupt();
-		
+	
 	}
   /* NOTE : This function should not be modified, when the callback is needed,
             the HAL_UARTEx_RxEventCallback can be implemented in the user file.
    */
+}
+
+StatusType checkModule(){
+	StatusType outputStatus = STATUS_UNKNOWN;
+	sendCommand("AT", RUN_COMMAND_COUNTER_DEFAULT, RUN_COMMAND_TIMEOUT_MS_DEFAULT);
+	outputStatus = commandResponseStatus;
+	return outputStatus;
+}
+
+StatusType setEchoMode(){
+	StatusType outputStatus = STATUS_UNKNOWN;
+	return outputStatus;
+}
+
+StatusType checkSim(){
+	StatusType outputStatus = STATUS_UNKNOWN;
+	return outputStatus;
+}
+
+StatusType getAndSetOperationalBand(){
+	StatusType outputStatus = STATUS_UNKNOWN;
+	return outputStatus;
+}
+
+StatusType readSignalQualityReport(){
+	StatusType outputStatus = STATUS_UNKNOWN;
+	return outputStatus;
+}
+
+StatusType newMQTT(){
+	StatusType outputStatus = STATUS_UNKNOWN;
+	return outputStatus;
+}
+
+StatusType sendMQTTConnect(){
+	StatusType outputStatus = STATUS_UNKNOWN;
+	return outputStatus;
+}
+
+StatusType sendMQTTSub(){
+	StatusType outputStatus = STATUS_UNKNOWN;
+	return outputStatus;
+}
+
+StatusType MQTTDisconnect(){
+	StatusType outputStatus = STATUS_UNKNOWN;
+	return outputStatus;
 }
 
 /* USER CODE END 0 */
@@ -221,6 +278,17 @@ int main(void)
   /* USER CODE BEGIN WHILE */
   while (1)
   {
+		/* Set Up Module */
+		
+		
+		
+		// HAL_UART_Transmit(&huart2, (uint8_t *) "AT", (uint16_t) sizeof("AT"), 1000);
+		StatusType moduleStatus = checkModule();
+		HAL_Delay(100);
+		//if (checkModule() != STATUS_SUCCESS) {
+		//	continue;
+		//}
+		
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
@@ -310,9 +378,6 @@ static void MX_DMA_Init(void)
   /* DMA1_Channel6_IRQn interrupt configuration */
   HAL_NVIC_SetPriority(DMA1_Channel6_IRQn, 0, 0);
   HAL_NVIC_EnableIRQ(DMA1_Channel6_IRQn);
-  /* DMA1_Channel7_IRQn interrupt configuration */
-  HAL_NVIC_SetPriority(DMA1_Channel7_IRQn, 0, 0);
-  HAL_NVIC_EnableIRQ(DMA1_Channel7_IRQn);
 
 }
 

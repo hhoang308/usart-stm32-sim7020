@@ -7,6 +7,7 @@ typedef enum StatusType {
 	STATUS_MODEM_NOT_READY, /**< The modem is not ready yet. */
 	STATUS_TIMEOUT, /**< The operation timed out. */
 	STATUS_MQTT_NOT_CONNECTED, /**< The supplied socket is not connected. */
+	STATUS_UNKNOWN,
 } StatusType;
 
 #ifndef MQTT_CLIENT_ID 
