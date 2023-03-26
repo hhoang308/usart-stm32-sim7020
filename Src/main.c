@@ -21,6 +21,8 @@
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
+#include "stdio.h"
+#include "stdlib.h"
 #include "string.h"
 #include "stdbool.h"
 #include "Module.h"
@@ -69,12 +71,23 @@ static void MX_USART2_UART_Init(void);
 
 uint16_t oldPos = 0;
 uint16_t newPos = 0;
+uint8_t rssi;
+uint8_t ber;
+uint8_t networkRegistered;
+
 bool passivelyListen;
 bool responseReceived;
+bool mqttConnected = false;
+
 StatusType commandResponseStatus;
 
 char responseReceiveBuffer[RESPONSE_BUFFER_SIZE];
 char responseMainBuffer[RESPONSE_BUFFER_SIZE];
+char commandResponse[RESPONSE_BUFFER_SIZE];
+
+char delimiter[4] = ",\r\n";
+char message[100];
+bool sendMessagePredically = true;
 
 void wakeUpModule(){
 	/* Pull Down PWR Key*/
@@ -107,7 +120,7 @@ void sendCommand(char* command, uint8_t maxCount, uint32_t timeout){
 		responseReceived = false;
 		commandResponseStatus = STATUS_TIMEOUT;
 		HAL_UART_Transmit(&huart2, (uint8_t *) command, (uint16_t) strlen(command), timeout);
-		HAL_UART_Transmit(&huart2, (uint8_t *) "\r\n", (uint16_t) strlen(command), timeout);
+		HAL_UART_Transmit(&huart2, (uint8_t *) "\r\n", (uint16_t) strlen("\r\n"), timeout);
 		while(HAL_GetTick() - timer <= timeout){
 			if(responseReceived == true){
 				break;
@@ -155,8 +168,7 @@ void HAL_UARTEx_RxEventCallback(UART_HandleTypeDef *huart, uint16_t Size)
 			newPos = Size+oldPos;
 		}
 		
-	/* start the DMA again */
-	resetDMAInterrupt();
+	
 		
 	/* Checking passively listen */
 	if(passivelyListen){
@@ -179,10 +191,14 @@ void HAL_UARTEx_RxEventCallback(UART_HandleTypeDef *huart, uint16_t Size)
 		if(success_ptr != NULL){
 			commandResponseStatus = STATUS_SUCCESS;
 			responseReceived = true;
+			strcpy(commandResponse, responseMainBuffer);
 			clearMainBuffer();
 			break;
 		}
 	}
+	
+	/* Start the DMA again */
+	resetDMAInterrupt();
 	
 	}
   /* NOTE : This function should not be modified, when the callback is needed,
@@ -199,41 +215,150 @@ StatusType checkModule(){
 
 StatusType setEchoMode(){
 	StatusType outputStatus = STATUS_UNKNOWN;
+	sendCommand("ATE0", RUN_COMMAND_COUNTER_DEFAULT, RUN_COMMAND_TIMEOUT_MS_DEFAULT);
+	outputStatus = commandResponseStatus;
 	return outputStatus;
 }
 
 StatusType checkSim(){
 	StatusType outputStatus = STATUS_UNKNOWN;
+	sendCommand("AT+CPIN?", RUN_COMMAND_COUNTER_DEFAULT, RUN_COMMAND_TIMEOUT_MS_DEFAULT);
+	outputStatus = commandResponseStatus;
 	return outputStatus;
 }
 
 StatusType getAndSetOperationalBand(){
 	StatusType outputStatus = STATUS_UNKNOWN;
+	sendCommand("AT+CBAND=3", RUN_COMMAND_COUNTER_DEFAULT, RUN_COMMAND_TIMEOUT_MS_DEFAULT);
+	outputStatus = commandResponseStatus;
 	return outputStatus;
 }
 
 StatusType readSignalQualityReport(){
 	StatusType outputStatus = STATUS_UNKNOWN;
+	sendCommand("AT+CSQ", RUN_COMMAND_COUNTER_DEFAULT, RUN_COMMAND_TIMEOUT_MS_DEFAULT);
+	outputStatus = commandResponseStatus;
+	if(outputStatus == STATUS_SUCCESS){
+		/* RSSI and BER */
+		
+		int numberOfElements = 2;
+		char *data_pointer;
+		char *token_array[numberOfElements];
+		char *token;
+		
+		uint8_t i = 0;
+		
+		data_pointer = strstr(commandResponse, ":");
+		data_pointer = data_pointer + 2;
+		token = strtok(data_pointer, delimiter);
+		
+		while(token != NULL && i < numberOfElements){
+			token_array[i] = token;
+			token = strtok(NULL, delimiter);
+			i++;
+		}
+		rssi = atoi(token_array[0]);
+		ber = atoi(token_array[1]);
+		
+	}
+	return outputStatus;
+}
+
+StatusType readNetworkRegistrationStatus(){
+	StatusType outputStatus = STATUS_UNKNOWN;
+	sendCommand("AT+CREG?",RUN_COMMAND_COUNTER_DEFAULT, RUN_COMMAND_TIMEOUT_MS_DEFAULT);
+	outputStatus = commandResponseStatus;
+	if(outputStatus == STATUS_SUCCESS){
+		/* Registered */
+		
+		uint8_t numberOfElements = 2;
+		char *data_pointer;
+		char *token;
+		char *token_array[numberOfElements];
+		uint8_t i = 0;
+		
+		data_pointer = strstr(commandResponse, ":");
+		data_pointer = data_pointer + 2;
+		
+		if(!data_pointer){
+			outputStatus = STATUS_FAILURE;
+			return outputStatus;
+		}
+		
+		token = strtok(data_pointer, delimiter);
+		
+		while(token != NULL && i < numberOfElements){
+			token_array[i] = token;
+			token = strtok(NULL, delimiter);
+			i++;
+		}
+		
+		networkRegistered = atoi(token_array[1]); 
+
+	} 
+	return outputStatus;
+}
+
+StatusType setPhoneFunctionality(uint8_t fun){
+	StatusType outputStatus = STATUS_UNKNOWN;
+	char command[20];
+	sprintf(command, "AT+CFUN=%u", fun);
+	sendCommand(command, RUN_COMMAND_COUNTER_DEFAULT, RUN_COMMAND_TIMEOUT_MS_DEFAULT);
+	outputStatus = commandResponseStatus;
+	return outputStatus;
+}
+
+StatusType setDefaultPSDConnection(){
+	StatusType outputStatus = STATUS_UNKNOWN;
+	sendCommand("AT*MCGDEFCONT=\"ip\",\"nbiot\"", RUN_COMMAND_COUNTER_DEFAULT, RUN_COMMAND_TIMEOUT_MS_DEFAULT);
+	outputStatus = commandResponseStatus;
 	return outputStatus;
 }
 
 StatusType newMQTT(){
 	StatusType outputStatus = STATUS_UNKNOWN;
+	char command[50];
+	sprintf(command, "AT+CMQNEW=\"%s\",\"%i\",%u,%u", MQTT_SERVER, MQTT_PORT, MQTT_COMMAND_TIMEOUT_MS, MQTT_BUFFER_SIZE);
+	sendCommand(command, RUN_COMMAND_COUNTER_DEFAULT, RUN_COMMAND_TIMEOUT_MS_DEFAULT + 1000);
+	outputStatus = commandResponseStatus;
+	/* +CEREG */
+	
 	return outputStatus;
 }
 
 StatusType sendMQTTConnect(){
 	StatusType outputStatus = STATUS_UNKNOWN;
+	char command[50];
+	sprintf(command, "AT+CMQCON=%u,%u,\"%s\",%u,%u,%u",MQTT_ID, MQTT_VERSION, MQTT_CLIENT_ID, MQTT_KEEP_ALIVE_INTERVAL, MQTT_CONNECT_CLEAN_SESSION, MQTT_CONNECT_WILL_FLAG);
+	sendCommand(command, RUN_COMMAND_COUNTER_DEFAULT, RUN_COMMAND_TIMEOUT_MS_DEFAULT + 1000);
+	outputStatus = commandResponseStatus;
+	if(outputStatus == STATUS_SUCCESS){
+		mqttConnected = true;
+	}else{
+		mqttConnected = false;
+	}
 	return outputStatus;
 }
 
-StatusType sendMQTTSub(){
+StatusType sendMQTTPub(char topic[], uint8_t qos, bool retained, bool dup, char message[]){
 	StatusType outputStatus = STATUS_UNKNOWN;
+	uint16_t messageLength = strlen(message);
+	char command[200];
+	sprintf(command, "AT+CMQPUB=%u,\"%s\",%u,%u,%u,%u,\"%s\"", MQTT_ID, topic, qos, retained, dup, messageLength, message);
+	sendCommand(command, RUN_COMMAND_COUNTER_DEFAULT, RUN_COMMAND_TIMEOUT_MS_DEFAULT + 1000);
+	outputStatus = commandResponseStatus;
 	return outputStatus;
 }
 
 StatusType MQTTDisconnect(){
 	StatusType outputStatus = STATUS_UNKNOWN;
+	char command[20];
+	sprintf(command, "AT+CMQDISCON=%u", MQTT_ID);
+	sendCommand(command, RUN_COMMAND_COUNTER_DEFAULT, RUN_COMMAND_TIMEOUT_MS_DEFAULT);
+	outputStatus = commandResponseStatus;
+	if(outputStatus != STATUS_SUCCESS){
+		mqttConnected = false;
+	}
 	return outputStatus;
 }
 
@@ -271,6 +396,7 @@ int main(void)
   MX_USART2_UART_Init();
   /* USER CODE BEGIN 2 */
 	
+	uint8_t programStage = 1;
 	
   /* USER CODE END 2 */
 
@@ -278,16 +404,107 @@ int main(void)
   /* USER CODE BEGIN WHILE */
   while (1)
   {
-		/* Set Up Module */
+		/* Stage 1 - Set Up Module */
+		while(programStage == 1){
+			
+			if(checkModule() != STATUS_SUCCESS){
+				continue;
+			}
+			
+			if(setEchoMode() != STATUS_SUCCESS){
+				continue;
+			}
+			
+			if(checkSim() != STATUS_SUCCESS){
+				continue;
+			}
+			
+			if(getAndSetOperationalBand() != STATUS_SUCCESS){
+				continue;
+			}
+			
+			HAL_Delay(2000);
+			programStage = 2;	
+			
+		}
+		/* Stage 2 - Check Network */
+		int8_t tryTimes = 0;
+		while(programStage == 2){	
+			/* Check Registration Status */
+			while (tryTimes < 2)
+			{
+				if (readNetworkRegistrationStatus() == STATUS_SUCCESS)
+				{	
+					programStage = 3;
+					break;
+				}
+			HAL_Delay(5000);
+			}
+			if(tryTimes == 2){
+				
+				if(setPhoneFunctionality(0) != STATUS_SUCCESS){
+					continue;
+				}
+				
+				if(setDefaultPSDConnection() != STATUS_SUCCESS){
+					continue;
+				}
+				
+				if(setPhoneFunctionality(1) != STATUS_SUCCESS){
+					continue;
+				}
+				
+				if(readNetworkRegistrationStatus() == STATUS_SUCCESS){
+					programStage = 3;
+					break;
+				}else{
+					programStage = 1;
+					break;
+				}				
+			}
+		}
 		
+		/* Stage 3 - Configure PSM Feature*/
+		while(programStage == 3){
+			programStage = 4;
+		}
 		
+		/* Stage 4 - MQTT */
 		
-		// HAL_UART_Transmit(&huart2, (uint8_t *) "AT", (uint16_t) sizeof("AT"), 1000);
-		StatusType moduleStatus = checkModule();
-		HAL_Delay(100);
-		//if (checkModule() != STATUS_SUCCESS) {
-		//	continue;
-		//}
+		while(programStage == 4){
+//			do{
+//				if(newMQTT() != STATUS_SUCCESS){
+//					programStage = 2;
+//					break;
+//				}
+//			}while(!mqttConnected);
+			
+			if(newMQTT() != STATUS_SUCCESS){
+				programStage = 2;
+				break;
+			}
+			
+			if(sendMQTTConnect() != STATUS_SUCCESS){
+				continue;
+			}
+			
+			/* Send Message */
+			
+			if(sendMessagePredically){
+				sprintf(message,"test1");
+				if(sendMQTTPub("messages", 1, 0, 0, message) != STATUS_SUCCESS){
+					continue;
+				}else{
+					sendMessagePredically = false;
+				}
+			}
+			
+			if(MQTTDisconnect() != STATUS_SUCCESS){
+				programStage = 2;
+				break;
+			}
+			
+		}
 		
     /* USER CODE END WHILE */
 

@@ -6,7 +6,7 @@
 #endif
 
 #ifndef COMMAND_ECHO_MODE
-#define COMMAND_ECHO_MODE "ATE"
+#define COMMAND_ECHO_MODE "ATE0"
 #endif
 
 #ifndef OPERATOR_SELECTION

@@ -8,6 +8,7 @@ typedef enum StatusType {
 	STATUS_TIMEOUT, /**< The operation timed out. */
 	STATUS_MQTT_NOT_CONNECTED, /**< The supplied socket is not connected. */
 	STATUS_UNKNOWN,
+	STATUS_FAILURE,
 } StatusType;
 
 #ifndef MQTT_CLIENT_ID 
@@ -30,8 +31,38 @@ typedef enum StatusType {
 #define MQTT_PASSWORD "admin"
 #endif
 
+#ifndef MQTT_COMMAND_TIMEOUT_MS	
+#define MQTT_COMMAND_TIMEOUT_MS	12000
+#endif
+
+#ifndef MQTT_BUFFER_SIZE 
+#define MQTT_BUFFER_SIZE	1024
+#endif
+
+#ifndef MQTT_VERSION
+#define MQTT_VERSION 3 	
+#endif
+
+#ifndef MQTT_ID
+#define MQTT_ID 0 	
+#endif
+
+#ifndef MQTT_KEEP_ALIVE_INTERVAL
+#define MQTT_KEEP_ALIVE_INTERVAL 600 	
+#endif
+
+#ifndef MQTT_CONNECT_CLEAN_SESSION
+#define MQTT_CONNECT_CLEAN_SESSION 1
+#endif
+
+#ifndef MQTT_CONNECT_WILL_FLAG
+#define MQTT_CONNECT_WILL_FLAG 0
+#endif
+
 #ifndef COMMAND_TIMEOUT
 #define COMMAND_TIMEOUT 5000
 #endif
+
+
 
 #endif /* PARAMETER_H_ */
