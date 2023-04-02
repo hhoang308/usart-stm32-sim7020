@@ -63,6 +63,16 @@ typedef enum StatusType {
 #define COMMAND_TIMEOUT 5000
 #endif
 
+#ifndef RESPONSE_BUFFER_SIZE
+#define RESPONSE_BUFFER_SIZE 256
+#endif
 
+#ifndef RUN_COMMAND_COUNTER_DEFAULT
+#define RUN_COMMAND_COUNTER_DEFAULT 4
+#endif
+
+#ifndef RUN_COMMAND_TIMEOUT_MS_DEFAULT
+#define RUN_COMMAND_TIMEOUT_MS_DEFAULT 1500
+#endif
 
 #endif /* PARAMETER_H_ */

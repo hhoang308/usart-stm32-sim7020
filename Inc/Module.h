@@ -6,8 +6,7 @@ static const char *SUCCESS_COMMAND_SIGN[] = { "OK\r\n", "\r\n\r\n" };
 
 static const char *ERROR_COMMAND_SIGN[] = { "ERROR\r\n", "ERROR" };
 
-static const char *PASSIVE_RESPONSE_SIGN[] = { "NORMAL POWER DOWN",
-		"+CPSMSTATUS: \"EN", "+CPSMSTATUS: \"EX" };
+static const char *PASSIVE_RESPONSE_SIGN[] = { "NORMAL POWER DOWN", "*MATREADY: 1", "+CPSMSTATUS: \"EN", "+CPSMSTATUS: \"EX" };
 
 #ifndef SUCCESS_RESPONSE_LENGTH
 #define SUCCESS_RESPONSE_LENGTH (sizeof(SUCCESS_COMMAND_SIGN) / sizeof(SUCCESS_COMMAND_SIGN[0]))

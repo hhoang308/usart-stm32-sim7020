@@ -28,6 +28,9 @@
 #include "Module.h"
 #include "ATCommandList.h"
 #include "Parameter.h"
+#include "ssd1306.h"
+#include "fonts.h"
+#include "bitmap.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -46,6 +49,14 @@
 /* USER CODE END PM */
 
 /* Private variables ---------------------------------------------------------*/
+ADC_HandleTypeDef hadc1;
+
+I2C_HandleTypeDef hi2c1;
+
+TIM_HandleTypeDef htim2;
+TIM_HandleTypeDef htim3;
+TIM_HandleTypeDef htim4;
+
 UART_HandleTypeDef huart2;
 DMA_HandleTypeDef hdma_usart2_rx;
 
@@ -58,6 +69,11 @@ void SystemClock_Config(void);
 static void MX_GPIO_Init(void);
 static void MX_DMA_Init(void);
 static void MX_USART2_UART_Init(void);
+static void MX_ADC1_Init(void);
+static void MX_I2C1_Init(void);
+static void MX_TIM2_Init(void);
+static void MX_TIM3_Init(void);
+static void MX_TIM4_Init(void);
 /* USER CODE BEGIN PFP */
 
 /* USER CODE END PFP */
@@ -65,19 +81,24 @@ static void MX_USART2_UART_Init(void);
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
 
-#define RESPONSE_BUFFER_SIZE 256
-#define RUN_COMMAND_COUNTER_DEFAULT 4
-#define RUN_COMMAND_TIMEOUT_MS_DEFAULT 1500
-
 uint16_t oldPos = 0;
 uint16_t newPos = 0;
-uint8_t rssi;
-uint8_t ber;
+int rssi = -1;
+int ber = -1;
 uint8_t networkRegistered;
+uint8_t programStage = 1;
 
-bool passivelyListen;
+uint32_t currentMillis = 0;
+uint32_t previosMillis = 0;
+
+bool passivelyListen = false;
 bool responseReceived;
 bool mqttConnected = false;
+bool oledButton = false;
+bool forcePush = false;
+bool sendMessagePeriod = false;
+bool waterLeak = false;	
+bool messageSent = false;
 
 StatusType commandResponseStatus;
 
@@ -89,11 +110,114 @@ char delimiter[4] = ",\r\n";
 char message[100];
 bool sendMessagePredically = true;
 
+float flow; /* Lit per minute */
+char bufferflow[20];
+float waterFlowPrevious;
+float waterFlowNow;
+float volume = 0; 
+float batteryVoltage = 3.3;
+
+int counter10ms = 0;
+int pulse;
+
+/**/
+
+int counterOLEDDisplay = -1;
+int counterWaterLeakage = -1;
+int counterSendMessage = -1;
+int counter1second = 0;
+int counterWaterRemainUnleak = -1;
+/**/
+
+void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
+{
+  /* Prevent unused argument(s) compilation warning */
+	UNUSED(htim);
+	if(htim->Instance == TIM4){ /* 10ms */
+		counter10ms++;
+		if(counter10ms == 10){ /* Calculate each 100ms */
+			flow = (pulse * 10) * 7.5 / (60 * 60) ; /* pulse * 10 = frequency, 7.5 is a parameter number based on datasheet, lit/hour to lit/second */
+			counter10ms = 0;
+			pulse = 0;
+		}
+		waterFlowPrevious = waterFlowNow;
+		waterFlowNow = flow;
+		volume += (waterFlowNow + waterFlowPrevious)/2 * 0.01; /* Avarage flow rate per 10ms, then multiply with time to have the volume*/
+	}
+	if(htim->Instance == TIM2){ /* 1s */
+		if(oledButton){
+			counterOLEDDisplay++;
+			if(counterOLEDDisplay == 5){
+				counterOLEDDisplay = 0;
+				HAL_GPIO_EXTI_Callback(GPIO_PIN_10);
+			}
+		}
+//		counter1second++;
+//		if(counter1second == 8){
+//			waterLeak = !waterLeak;
+//			counter1second = 0;
+//		}
+	}
+	if(htim->Instance == TIM3){ /* 1 minute */
+		// counter1minute++;
+		counterSendMessage++;
+		if(counterSendMessage == 5){
+			messageSent = false;
+			programStage = 4;
+			counterSendMessage = -1;
+		}
+		/* For Demo Purpose */
+		if(flow == 0){
+			counterWaterLeakage++;
+			if(counterWaterLeakage == 5){
+				waterLeak = true;
+				counterWaterLeakage = -1;
+			}
+		}else if(!waterLeak){
+			counterWaterRemainUnleak++;
+			if(counterWaterRemainUnleak == 1){\
+				waterLeak = false;
+				counterWaterRemainUnleak = -1;
+			}
+		}
+	}
+  /* NOTE : This function should not be modified, when the callback is needed,
+            the HAL_TIM_PeriodElapsedCallback could be implemented in the user file
+   */
+}
+
+void HAL_ADC_ConvCpltCallback(ADC_HandleTypeDef* hadc)
+{
+  /* Prevent unused argument(s) compilation warning */
+  UNUSED(hadc);
+	if(hadc->Instance == ADC1){
+		uint16_t u16_ADCVal = HAL_ADC_GetValue(&hadc1);
+		batteryVoltage = (((float) u16_ADCVal * 2)/4095)*3.3;
+	}
+  /* NOTE : This function should not be modified. When the callback is needed,
+            function HAL_ADC_ConvCpltCallback must be implemented in the user file.
+   */
+}
+
+void turnOnModule(){
+		HAL_GPIO_WritePin(GPIOA, GPIO_PIN_9, GPIO_PIN_SET);
+		/* Delay 800ms (According to Hardware Design Datasheet */
+		HAL_Delay(800);
+		HAL_GPIO_WritePin(GPIOA, GPIO_PIN_9, GPIO_PIN_RESET);
+		HAL_Delay(200);
+}
+
 void wakeUpModule(){
-	/* Pull Down PWR Key*/
-	
-	/* Delay 800ms */
-	
+	/* Pull Up/Down PWR key depend on Module*/
+	uint8_t count = 2;
+	while(count--){
+		HAL_GPIO_WritePin(GPIOA, GPIO_PIN_9, GPIO_PIN_SET);
+		/* Delay 60ms (According to Hardware Design Datasheet */
+		HAL_Delay(60);
+		HAL_GPIO_WritePin(GPIOA, GPIO_PIN_9, GPIO_PIN_RESET);
+		HAL_Delay(200);
+	}
+	HAL_GPIO_WritePin(GPIOA, GPIO_PIN_9, GPIO_PIN_RESET);
 }
 
 void resetDMAInterrupt(){
@@ -115,6 +239,9 @@ void sendCommand(char* command, uint8_t maxCount, uint32_t timeout){
 	
 	while(counter++ < maxCount){
 		clearMainBuffer();
+		if(!strcmp(command,"AT+CPOWD=1")){
+			passivelyListen = false;
+		}
 		resetDMAInterrupt();
 		timer = HAL_GetTick();
 		responseReceived = false;
@@ -168,11 +295,17 @@ void HAL_UARTEx_RxEventCallback(UART_HandleTypeDef *huart, uint16_t Size)
 			newPos = Size+oldPos;
 		}
 		
-	
-		
 	/* Checking passively listen */
 	if(passivelyListen){
-		
+		for(int i = 0; i < PASSIVE_RESPONSE_LENGTH; i++){
+			error_ptr = strstr(responseMainBuffer, PASSIVE_RESPONSE_SIGN[0]);
+			if(error_ptr != NULL){
+				commandResponseStatus = STATUS_SUCCESS;
+				clearMainBuffer();
+				responseReceived = true;
+			}
+		}
+		passivelyListen = false;
 	}	
 		
 	/* Checking completion of command */
@@ -204,6 +337,14 @@ void HAL_UARTEx_RxEventCallback(UART_HandleTypeDef *huart, uint16_t Size)
   /* NOTE : This function should not be modified, when the callback is needed,
             the HAL_UARTEx_RxEventCallback can be implemented in the user file.
    */
+}
+
+StatusType powerOffModule(){
+	StatusType outputStatus = STATUS_UNKNOWN;
+	passivelyListen = true;
+	sendCommand("AT+CPOWD=1", 1, RUN_COMMAND_TIMEOUT_MS_DEFAULT);
+	outputStatus = commandResponseStatus;
+	return outputStatus;
 }
 
 StatusType checkModule(){
@@ -319,7 +460,7 @@ StatusType newMQTT(){
 	StatusType outputStatus = STATUS_UNKNOWN;
 	char command[50];
 	sprintf(command, "AT+CMQNEW=\"%s\",\"%i\",%u,%u", MQTT_SERVER, MQTT_PORT, MQTT_COMMAND_TIMEOUT_MS, MQTT_BUFFER_SIZE);
-	sendCommand(command, RUN_COMMAND_COUNTER_DEFAULT, RUN_COMMAND_TIMEOUT_MS_DEFAULT + 1000);
+	sendCommand(command, RUN_COMMAND_COUNTER_DEFAULT + 1, RUN_COMMAND_TIMEOUT_MS_DEFAULT + 3000);
 	outputStatus = commandResponseStatus;
 	/* +CEREG */
 	
@@ -330,13 +471,13 @@ StatusType sendMQTTConnect(){
 	StatusType outputStatus = STATUS_UNKNOWN;
 	char command[50];
 	sprintf(command, "AT+CMQCON=%u,%u,\"%s\",%u,%u,%u",MQTT_ID, MQTT_VERSION, MQTT_CLIENT_ID, MQTT_KEEP_ALIVE_INTERVAL, MQTT_CONNECT_CLEAN_SESSION, MQTT_CONNECT_WILL_FLAG);
-	sendCommand(command, RUN_COMMAND_COUNTER_DEFAULT, RUN_COMMAND_TIMEOUT_MS_DEFAULT + 1000);
+	sendCommand(command, RUN_COMMAND_COUNTER_DEFAULT + 4, RUN_COMMAND_TIMEOUT_MS_DEFAULT + 4000);
 	outputStatus = commandResponseStatus;
-	if(outputStatus == STATUS_SUCCESS){
-		mqttConnected = true;
-	}else{
-		mqttConnected = false;
-	}
+//	if(outputStatus == STATUS_SUCCESS){
+//		mqttConnected = true;
+//	}else{
+//		mqttConnected = false;
+//	}
 	return outputStatus;
 }
 
@@ -345,7 +486,7 @@ StatusType sendMQTTPub(char topic[], uint8_t qos, bool retained, bool dup, char 
 	uint16_t messageLength = strlen(message);
 	char command[200];
 	sprintf(command, "AT+CMQPUB=%u,\"%s\",%u,%u,%u,%u,\"%s\"", MQTT_ID, topic, qos, retained, dup, messageLength, message);
-	sendCommand(command, RUN_COMMAND_COUNTER_DEFAULT, RUN_COMMAND_TIMEOUT_MS_DEFAULT + 1000);
+	sendCommand(command, RUN_COMMAND_COUNTER_DEFAULT + 1, RUN_COMMAND_TIMEOUT_MS_DEFAULT + 2000);
 	outputStatus = commandResponseStatus;
 	return outputStatus;
 }
@@ -356,10 +497,224 @@ StatusType MQTTDisconnect(){
 	sprintf(command, "AT+CMQDISCON=%u", MQTT_ID);
 	sendCommand(command, RUN_COMMAND_COUNTER_DEFAULT, RUN_COMMAND_TIMEOUT_MS_DEFAULT);
 	outputStatus = commandResponseStatus;
-	if(outputStatus != STATUS_SUCCESS){
-		mqttConnected = false;
-	}
+//	if(outputStatus != STATUS_SUCCESS){
+//		mqttConnected = false;
+//	}
 	return outputStatus;
+}
+
+void moduleFlow(){
+	/* Stage 1 - Set Up Module */
+		while(programStage == 1){
+			
+			if(checkModule() != STATUS_SUCCESS){
+				wakeUpModule();
+				continue;
+			}
+			
+			if(readSignalQualityReport() != STATUS_SUCCESS){
+				continue;
+			}
+			
+			if(setEchoMode() != STATUS_SUCCESS){
+				powerOffModule();
+				HAL_Delay(2000);
+				turnOnModule();
+			}
+			
+			if(checkSim() != STATUS_SUCCESS){
+				continue;
+			}
+			
+			if(getAndSetOperationalBand() != STATUS_SUCCESS){
+				continue;
+			}
+			
+			HAL_Delay(2000);
+			programStage = 2;	
+			
+		}
+		/* Stage 2 - Check Network */
+		
+		int8_t tryTimes = 3;
+		
+		while(programStage == 2){	
+			/* Check Registration Status */
+			while (tryTimes--){
+				/* AT+CREG */
+				if(tryTimes < 2){
+					wakeUpModule();
+					HAL_Delay(1000);
+				}
+				if(readNetworkRegistrationStatus() == STATUS_SUCCESS){	
+					programStage = 3;
+					break;
+				}
+				HAL_Delay(10000);
+			}
+			if(tryTimes == -1){ 
+				/* Cannot register automatically. Try to register manually 2 times */
+				int8_t tryManually = 3;
+				while(tryManually--){
+					if(setPhoneFunctionality(0) != STATUS_SUCCESS){
+						continue;
+					}
+				
+					if(setDefaultPSDConnection() != STATUS_SUCCESS){
+						continue;
+					}
+				
+					if(setPhoneFunctionality(1) != STATUS_SUCCESS){
+						continue;
+					}
+					
+					if(readNetworkRegistrationStatus() == STATUS_SUCCESS){
+						programStage = 3;
+						break;
+					}		
+				}
+				if(tryManually == -1){
+					powerOffModule();
+					programStage = 1;
+					HAL_Delay(2000);
+					turnOnModule();
+				}
+			}
+		}
+		
+		/* Stage 3 - Configure PSM Feature*/
+		while(programStage == 3){
+			programStage = 4;
+			HAL_Delay(2000);
+		}
+		
+		/* Stage 4 - MQTT */
+		
+		/* Send message on period */
+		int8_t tryMQTT;
+		while(programStage == 4){
+			tryMQTT = 3;
+			
+			while(tryMQTT--){
+				if(newMQTT() == STATUS_SUCCESS){
+					break;
+				}
+			}
+			
+			if(tryMQTT == -1){
+				powerOffModule();
+				HAL_Delay(2000);
+				turnOnModule();
+			}
+			
+			if(sendMQTTConnect() != STATUS_SUCCESS){
+				continue;
+			}
+		
+			/* Send Message */
+			
+			if(readSignalQualityReport() != STATUS_SUCCESS){
+				continue;
+			}
+			int8_t trySend = 10;
+			HAL_ADC_Start_IT(&hadc1);
+			while(trySend--){
+				sprintf(message,"bat:%.1f,vol:%.1f,sig:%u,leak:%u", batteryVoltage, volume, rssi, waterLeak);
+				if(sendMQTTPub("watermeter1/messages", 1, 0, 0, message) == STATUS_SUCCESS){
+					messageSent = true;
+					break;
+				}
+			}
+			
+			/* Failed to send message*/
+			/* Clear PSM (if necessary) */
+			if(trySend == -1){
+				wakeUpModule();
+				break;
+			}
+		
+			if(MQTTDisconnect() != STATUS_SUCCESS){
+				continue;
+			}
+			HAL_Delay(1000);
+			programStage = 5;
+		}
+		
+		while(programStage == 5){
+			/* Turn Off Module */
+			powerOffModule();
+			programStage = 0;
+			HAL_Delay(2000);
+		}
+		
+		/* What to do when MCU has free time ? */
+		passivelyListen = true;
+}
+
+void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
+{
+  /* Prevent unused argument(s) compilation warning */
+	currentMillis = HAL_GetTick();
+	if(GPIO_Pin == GPIO_PIN_10 && currentMillis - previosMillis > 500){
+		oledButton = !oledButton;
+		previosMillis = currentMillis;
+		if(oledButton){
+			/* Display OLED */
+			SSD1306_Clear();
+			SSD1306_ON();
+			SSD1306_GotoXY(0,0);
+			sprintf(bufferflow, "%2.1f L", volume);
+			SSD1306_Puts(bufferflow, &Font_11x18, 1);
+			HAL_ADC_Start_IT(&hadc1);
+			SSD1306_GotoXY(0,32);
+			sprintf(bufferflow, "ADC: %2.1f", batteryVoltage);
+			SSD1306_Puts(bufferflow, &Font_11x18, 1);	
+			/* Display Battery Icon */
+			
+			if(batteryVoltage > 2.8){
+				if(batteryVoltage > 3.1){
+					SSD1306_DrawBitmap(112, 0, bat3_icon16x16, 16, 16, 1);
+				}else{
+					SSD1306_DrawBitmap(112, 0, bat2_icon16x16, 16, 16, 1);
+				}
+			}else{
+				if(batteryVoltage < 2.6){
+					SSD1306_DrawBitmap(112, 0, bat0_icon16x16, 16, 16, 1);
+				}else{
+					SSD1306_DrawBitmap(112, 0, bat1_icon16x16, 16, 16, 1);
+				}
+			}
+			/* Display Signal Icon */
+			
+			if(rssi > 10){
+				if(rssi > 20){
+					SSD1306_DrawBitmap(112, 16, signal4_icon16x16, 16, 16, 1);
+				}else{
+					SSD1306_DrawBitmap(112, 16, signal3_icon16x16, 16, 16, 1);
+				}
+			}else{
+				if(rssi < 5){
+					SSD1306_DrawBitmap(112, 16, signal1_icon16x16, 16, 16, 1);
+				}else{
+					SSD1306_DrawBitmap(112, 16, signal2_icon16x16, 16, 16, 1);
+				}
+			}
+			
+			/*Display Water Tap */
+			
+			if(waterLeak){
+				SSD1306_DrawBitmap(112, 40, water_tap_icon16x16, 16, 16, 1); 
+			}
+			
+			SSD1306_UpdateScreen();
+		}else{
+			/* Turn Off OLED */
+			SSD1306_OFF();
+		}
+	}
+  /* NOTE: This function Should not be modified, when the callback is needed,
+           the HAL_GPIO_EXTI_Callback could be implemented in the user file
+   */
 }
 
 /* USER CODE END 0 */
@@ -394,9 +749,18 @@ int main(void)
   MX_GPIO_Init();
   MX_DMA_Init();
   MX_USART2_UART_Init();
+  MX_ADC1_Init();
+  MX_I2C1_Init();
+  MX_TIM2_Init();
+  MX_TIM3_Init();
+  MX_TIM4_Init();
   /* USER CODE BEGIN 2 */
 	
-	uint8_t programStage = 1;
+	HAL_TIM_Base_Start_IT(&htim2);
+	HAL_TIM_Base_Start_IT(&htim3);
+	HAL_TIM_Base_Start_IT(&htim4);
+	
+	SSD1306_Init();
 	
   /* USER CODE END 2 */
 
@@ -404,108 +768,12 @@ int main(void)
   /* USER CODE BEGIN WHILE */
   while (1)
   {
-		/* Stage 1 - Set Up Module */
-		while(programStage == 1){
-			
-			if(checkModule() != STATUS_SUCCESS){
-				continue;
-			}
-			
-			if(setEchoMode() != STATUS_SUCCESS){
-				continue;
-			}
-			
-			if(checkSim() != STATUS_SUCCESS){
-				continue;
-			}
-			
-			if(getAndSetOperationalBand() != STATUS_SUCCESS){
-				continue;
-			}
-			
-			HAL_Delay(2000);
-			programStage = 2;	
-			
+		if(!messageSent){
+			turnOnModule();
+			moduleFlow();
 		}
-		/* Stage 2 - Check Network */
-		int8_t tryTimes = 0;
-		while(programStage == 2){	
-			/* Check Registration Status */
-			while (tryTimes < 2)
-			{
-				if (readNetworkRegistrationStatus() == STATUS_SUCCESS)
-				{	
-					programStage = 3;
-					break;
-				}
-			HAL_Delay(5000);
-			}
-			if(tryTimes == 2){
-				
-				if(setPhoneFunctionality(0) != STATUS_SUCCESS){
-					continue;
-				}
-				
-				if(setDefaultPSDConnection() != STATUS_SUCCESS){
-					continue;
-				}
-				
-				if(setPhoneFunctionality(1) != STATUS_SUCCESS){
-					continue;
-				}
-				
-				if(readNetworkRegistrationStatus() == STATUS_SUCCESS){
-					programStage = 3;
-					break;
-				}else{
-					programStage = 1;
-					break;
-				}				
-			}
-		}
-		
-		/* Stage 3 - Configure PSM Feature*/
-		while(programStage == 3){
-			programStage = 4;
-		}
-		
-		/* Stage 4 - MQTT */
-		
-		while(programStage == 4){
-//			do{
-//				if(newMQTT() != STATUS_SUCCESS){
-//					programStage = 2;
-//					break;
-//				}
-//			}while(!mqttConnected);
-			
-			if(newMQTT() != STATUS_SUCCESS){
-				programStage = 2;
-				break;
-			}
-			
-			if(sendMQTTConnect() != STATUS_SUCCESS){
-				continue;
-			}
-			
-			/* Send Message */
-			
-			if(sendMessagePredically){
-				sprintf(message,"test1");
-				if(sendMQTTPub("messages", 1, 0, 0, message) != STATUS_SUCCESS){
-					continue;
-				}else{
-					sendMessagePredically = false;
-				}
-			}
-			
-			if(MQTTDisconnect() != STATUS_SUCCESS){
-				programStage = 2;
-				break;
-			}
-			
-		}
-		
+		HAL_GPIO_TogglePin(GPIOC, GPIO_PIN_13);
+		HAL_Delay(500);
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
@@ -521,6 +789,7 @@ void SystemClock_Config(void)
 {
   RCC_OscInitTypeDef RCC_OscInitStruct = {0};
   RCC_ClkInitTypeDef RCC_ClkInitStruct = {0};
+  RCC_PeriphCLKInitTypeDef PeriphClkInit = {0};
 
   /** Initializes the RCC Oscillators according to the specified parameters
   * in the RCC_OscInitTypeDef structure.
@@ -547,6 +816,228 @@ void SystemClock_Config(void)
   {
     Error_Handler();
   }
+  PeriphClkInit.PeriphClockSelection = RCC_PERIPHCLK_ADC;
+  PeriphClkInit.AdcClockSelection = RCC_ADCPCLK2_DIV2;
+  if (HAL_RCCEx_PeriphCLKConfig(&PeriphClkInit) != HAL_OK)
+  {
+    Error_Handler();
+  }
+}
+
+/**
+  * @brief ADC1 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_ADC1_Init(void)
+{
+
+  /* USER CODE BEGIN ADC1_Init 0 */
+
+  /* USER CODE END ADC1_Init 0 */
+
+  ADC_ChannelConfTypeDef sConfig = {0};
+
+  /* USER CODE BEGIN ADC1_Init 1 */
+
+  /* USER CODE END ADC1_Init 1 */
+
+  /** Common config
+  */
+  hadc1.Instance = ADC1;
+  hadc1.Init.ScanConvMode = ADC_SCAN_DISABLE;
+  hadc1.Init.ContinuousConvMode = DISABLE;
+  hadc1.Init.DiscontinuousConvMode = DISABLE;
+  hadc1.Init.ExternalTrigConv = ADC_SOFTWARE_START;
+  hadc1.Init.DataAlign = ADC_DATAALIGN_RIGHT;
+  hadc1.Init.NbrOfConversion = 1;
+  if (HAL_ADC_Init(&hadc1) != HAL_OK)
+  {
+    Error_Handler();
+  }
+
+  /** Configure Regular Channel
+  */
+  sConfig.Channel = ADC_CHANNEL_5;
+  sConfig.Rank = ADC_REGULAR_RANK_1;
+  sConfig.SamplingTime = ADC_SAMPLETIME_1CYCLE_5;
+  if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN ADC1_Init 2 */
+
+  /* USER CODE END ADC1_Init 2 */
+
+}
+
+/**
+  * @brief I2C1 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_I2C1_Init(void)
+{
+
+  /* USER CODE BEGIN I2C1_Init 0 */
+
+  /* USER CODE END I2C1_Init 0 */
+
+  /* USER CODE BEGIN I2C1_Init 1 */
+
+  /* USER CODE END I2C1_Init 1 */
+  hi2c1.Instance = I2C1;
+  hi2c1.Init.ClockSpeed = 400000;
+  hi2c1.Init.DutyCycle = I2C_DUTYCYCLE_2;
+  hi2c1.Init.OwnAddress1 = 0;
+  hi2c1.Init.AddressingMode = I2C_ADDRESSINGMODE_7BIT;
+  hi2c1.Init.DualAddressMode = I2C_DUALADDRESS_DISABLE;
+  hi2c1.Init.OwnAddress2 = 0;
+  hi2c1.Init.GeneralCallMode = I2C_GENERALCALL_DISABLE;
+  hi2c1.Init.NoStretchMode = I2C_NOSTRETCH_DISABLE;
+  if (HAL_I2C_Init(&hi2c1) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN I2C1_Init 2 */
+
+  /* USER CODE END I2C1_Init 2 */
+
+}
+
+/**
+  * @brief TIM2 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_TIM2_Init(void)
+{
+
+  /* USER CODE BEGIN TIM2_Init 0 */
+
+  /* USER CODE END TIM2_Init 0 */
+
+  TIM_ClockConfigTypeDef sClockSourceConfig = {0};
+  TIM_MasterConfigTypeDef sMasterConfig = {0};
+
+  /* USER CODE BEGIN TIM2_Init 1 */
+
+  /* USER CODE END TIM2_Init 1 */
+  htim2.Instance = TIM2;
+  htim2.Init.Prescaler = 8000-1;
+  htim2.Init.CounterMode = TIM_COUNTERMODE_UP;
+  htim2.Init.Period = 1000-1;
+  htim2.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
+  htim2.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
+  if (HAL_TIM_Base_Init(&htim2) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sClockSourceConfig.ClockSource = TIM_CLOCKSOURCE_INTERNAL;
+  if (HAL_TIM_ConfigClockSource(&htim2, &sClockSourceConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sMasterConfig.MasterOutputTrigger = TIM_TRGO_RESET;
+  sMasterConfig.MasterSlaveMode = TIM_MASTERSLAVEMODE_DISABLE;
+  if (HAL_TIMEx_MasterConfigSynchronization(&htim2, &sMasterConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN TIM2_Init 2 */
+
+  /* USER CODE END TIM2_Init 2 */
+
+}
+
+/**
+  * @brief TIM3 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_TIM3_Init(void)
+{
+
+  /* USER CODE BEGIN TIM3_Init 0 */
+
+  /* USER CODE END TIM3_Init 0 */
+
+  TIM_ClockConfigTypeDef sClockSourceConfig = {0};
+  TIM_MasterConfigTypeDef sMasterConfig = {0};
+
+  /* USER CODE BEGIN TIM3_Init 1 */
+
+  /* USER CODE END TIM3_Init 1 */
+  htim3.Instance = TIM3;
+  htim3.Init.Prescaler = 8000-1;
+  htim3.Init.CounterMode = TIM_COUNTERMODE_UP;
+  htim3.Init.Period = 60000-1;
+  htim3.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
+  htim3.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
+  if (HAL_TIM_Base_Init(&htim3) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sClockSourceConfig.ClockSource = TIM_CLOCKSOURCE_INTERNAL;
+  if (HAL_TIM_ConfigClockSource(&htim3, &sClockSourceConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sMasterConfig.MasterOutputTrigger = TIM_TRGO_RESET;
+  sMasterConfig.MasterSlaveMode = TIM_MASTERSLAVEMODE_DISABLE;
+  if (HAL_TIMEx_MasterConfigSynchronization(&htim3, &sMasterConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN TIM3_Init 2 */
+
+  /* USER CODE END TIM3_Init 2 */
+
+}
+
+/**
+  * @brief TIM4 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_TIM4_Init(void)
+{
+
+  /* USER CODE BEGIN TIM4_Init 0 */
+
+  /* USER CODE END TIM4_Init 0 */
+
+  TIM_ClockConfigTypeDef sClockSourceConfig = {0};
+  TIM_MasterConfigTypeDef sMasterConfig = {0};
+
+  /* USER CODE BEGIN TIM4_Init 1 */
+
+  /* USER CODE END TIM4_Init 1 */
+  htim4.Instance = TIM4;
+  htim4.Init.Prescaler = 8000-1;
+  htim4.Init.CounterMode = TIM_COUNTERMODE_UP;
+  htim4.Init.Period = 10-1;
+  htim4.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
+  htim4.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
+  if (HAL_TIM_Base_Init(&htim4) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sClockSourceConfig.ClockSource = TIM_CLOCKSOURCE_INTERNAL;
+  if (HAL_TIM_ConfigClockSource(&htim4, &sClockSourceConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sMasterConfig.MasterOutputTrigger = TIM_TRGO_RESET;
+  sMasterConfig.MasterSlaveMode = TIM_MASTERSLAVEMODE_DISABLE;
+  if (HAL_TIMEx_MasterConfigSynchronization(&htim4, &sMasterConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN TIM4_Init 2 */
+
+  /* USER CODE END TIM4_Init 2 */
+
 }
 
 /**
@@ -611,9 +1102,13 @@ static void MX_GPIO_Init(void)
   __HAL_RCC_GPIOC_CLK_ENABLE();
   __HAL_RCC_GPIOD_CLK_ENABLE();
   __HAL_RCC_GPIOA_CLK_ENABLE();
+  __HAL_RCC_GPIOB_CLK_ENABLE();
 
   /*Configure GPIO pin Output Level */
   HAL_GPIO_WritePin(GPIOC, GPIO_PIN_13, GPIO_PIN_RESET);
+
+  /*Configure GPIO pin Output Level */
+  HAL_GPIO_WritePin(GPIOA, GPIO_PIN_9, GPIO_PIN_RESET);
 
   /*Configure GPIO pin : PC13 */
   GPIO_InitStruct.Pin = GPIO_PIN_13;
@@ -621,6 +1116,32 @@ static void MX_GPIO_Init(void)
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
   HAL_GPIO_Init(GPIOC, &GPIO_InitStruct);
+
+  /*Configure GPIO pin : PB0 */
+  GPIO_InitStruct.Pin = GPIO_PIN_0;
+  GPIO_InitStruct.Mode = GPIO_MODE_IT_RISING;
+  GPIO_InitStruct.Pull = GPIO_PULLUP;
+  HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
+
+  /*Configure GPIO pins : PB10 PB11 */
+  GPIO_InitStruct.Pin = GPIO_PIN_10|GPIO_PIN_11;
+  GPIO_InitStruct.Mode = GPIO_MODE_IT_FALLING;
+  GPIO_InitStruct.Pull = GPIO_PULLUP;
+  HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
+
+  /*Configure GPIO pin : PA9 */
+  GPIO_InitStruct.Pin = GPIO_PIN_9;
+  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
+  HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
+
+  /* EXTI interrupt init*/
+  HAL_NVIC_SetPriority(EXTI0_IRQn, 0, 0);
+  HAL_NVIC_EnableIRQ(EXTI0_IRQn);
+
+  HAL_NVIC_SetPriority(EXTI15_10_IRQn, 0, 0);
+  HAL_NVIC_EnableIRQ(EXTI15_10_IRQn);
 
 }
 
