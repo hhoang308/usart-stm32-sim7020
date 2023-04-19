@@ -110,7 +110,9 @@ char delimiter[4] = ",\r\n";
 char message[100];
 bool sendMessagePredically = true;
 
-float flow; /* Lit per minute */
+float flow = 0; /* Lit per minute */
+int frequency = 0;
+float coefficient = 7.5;
 char bufferflow[20];
 float waterFlowPrevious;
 float waterFlowNow;
@@ -118,7 +120,7 @@ float volume = 0;
 float batteryVoltage = 3.3;
 
 int counter10ms = 0;
-int pulse;
+int pulse = 0;
 
 /**/
 
@@ -136,7 +138,35 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
 	if(htim->Instance == TIM4){ /* 10ms */
 		counter10ms++;
 		if(counter10ms == 10){ /* Calculate each 100ms */
-			flow = (pulse * 10) * 7.5 / (60 * 60) ; /* pulse * 10 = frequency, 7.5 is a parameter number based on datasheet, lit/hour to lit/second */
+			frequency = pulse * 10;
+			if(frequency < 49.3){
+				if(frequency < 16){
+					coefficient = frequency/2;  /* 0 -> 16 */
+				}else if(frequency > 32.5){
+					coefficient = (frequency + 1451.195) / 182.608; /* 32.5 -> 49.3 */
+				}else{
+					coefficient = (frequency + 1040) / 132; /* 16 -> 32.5*/
+				}
+			}else{
+				if(frequency < 82){
+					if(frequency < 65.5){
+						coefficient = (4561.686 - frequency) / 549.153; /* 49.3 -> 65.5 */
+					}else{
+						coefficient = (frequency + 10742) / 1320; /* 65.5 -> 82 */
+					}
+				}else{
+					if(frequency < 90.2){
+						coefficient = -(frequency - 180.304) / 11.988; /* 82 -> 90.2 */
+					}else{
+						coefficient = 7.5; /* > 90.2 */
+					}
+				}
+			}
+			if(coefficient == 0){
+				flow = 0;
+			}else{
+				flow = frequency / (coefficient * 60) ; /* pulse * 10 = frequency, 7.5 is a parameter number based on datasheet, lit/minute to lit/second */
+			}
 			counter10ms = 0;
 			pulse = 0;
 		}
@@ -651,6 +681,18 @@ void moduleFlow(){
 		passivelyListen = true;
 }
 
+void turnOnSSD1306(){
+	ssd1306_I2C_Write(0x78, 0x00, 0x8D);
+	ssd1306_I2C_Write(0x78, 0x00, 0x14);
+	ssd1306_I2C_Write(0x78, 0x00, 0xAF);
+}
+
+void turnOffSSD1306(){
+	ssd1306_I2C_Write(0x78, 0x00, 0x8D);
+	ssd1306_I2C_Write(0x78, 0x00, 0x10);
+	ssd1306_I2C_Write(0x78, 0x00, 0xAE);
+}
+
 void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
 {
   /* Prevent unused argument(s) compilation warning */
@@ -661,13 +703,13 @@ void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
 		if(oledButton){
 			/* Display OLED */
 			SSD1306_Clear();
-			SSD1306_ON();
+			turnOnSSD1306();
 			SSD1306_GotoXY(0,0);
-			sprintf(bufferflow, "%2.1f L", volume);
+			sprintf(bufferflow, "%2.f L", volume);
 			SSD1306_Puts(bufferflow, &Font_11x18, 1);
 			HAL_ADC_Start_IT(&hadc1);
 			SSD1306_GotoXY(0,32);
-			sprintf(bufferflow, "ADC: %2.1f", batteryVoltage);
+			sprintf(bufferflow, "AC: %2.1f", batteryVoltage);
 			SSD1306_Puts(bufferflow, &Font_11x18, 1);	
 			/* Display Battery Icon */
 			
@@ -709,7 +751,7 @@ void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
 			SSD1306_UpdateScreen();
 		}else{
 			/* Turn Off OLED */
-			SSD1306_OFF();
+			turnOffSSD1306();
 		}
 	}
   /* NOTE: This function Should not be modified, when the callback is needed,
@@ -769,11 +811,20 @@ int main(void)
   while (1)
   {
 		if(!messageSent){
-			turnOnModule();
+			wakeUpModule();
 			moduleFlow();
 		}
 		HAL_GPIO_TogglePin(GPIOC, GPIO_PIN_13);
 		HAL_Delay(500);
+//		SSD1306_GotoXY(0,0);
+//    sprintf(bufferflow, "SV:%2.1f %2.1f ", flow, volume);
+//		SSD1306_Puts(bufferflow, &Font_11x18, 1);
+//		SSD1306_GotoXY(0,32);
+//		HAL_ADC_Start_IT(&hadc1);
+//		sprintf(bufferflow, "ADC: %2.1f", batteryVoltage);
+//		SSD1306_Puts(bufferflow, &Font_11x18, 1);
+//		SSD1306_UpdateScreen();
+//		HAL_Delay(500);
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
@@ -1084,7 +1135,7 @@ static void MX_DMA_Init(void)
 
   /* DMA interrupt init */
   /* DMA1_Channel6_IRQn interrupt configuration */
-  HAL_NVIC_SetPriority(DMA1_Channel6_IRQn, 0, 0);
+  HAL_NVIC_SetPriority(DMA1_Channel6_IRQn, 1, 0);
   HAL_NVIC_EnableIRQ(DMA1_Channel6_IRQn);
 
 }
@@ -1123,8 +1174,8 @@ static void MX_GPIO_Init(void)
   GPIO_InitStruct.Pull = GPIO_PULLUP;
   HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
 
-  /*Configure GPIO pins : PB10 PB11 */
-  GPIO_InitStruct.Pin = GPIO_PIN_10|GPIO_PIN_11;
+  /*Configure GPIO pin : PB10 */
+  GPIO_InitStruct.Pin = GPIO_PIN_10;
   GPIO_InitStruct.Mode = GPIO_MODE_IT_FALLING;
   GPIO_InitStruct.Pull = GPIO_PULLUP;
   HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
@@ -1140,7 +1191,7 @@ static void MX_GPIO_Init(void)
   HAL_NVIC_SetPriority(EXTI0_IRQn, 0, 0);
   HAL_NVIC_EnableIRQ(EXTI0_IRQn);
 
-  HAL_NVIC_SetPriority(EXTI15_10_IRQn, 0, 0);
+  HAL_NVIC_SetPriority(EXTI15_10_IRQn, 2, 0);
   HAL_NVIC_EnableIRQ(EXTI15_10_IRQn);
 
 }
