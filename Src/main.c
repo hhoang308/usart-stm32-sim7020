@@ -93,12 +93,11 @@ uint32_t previosMillis = 0;
 
 bool passivelyListen = false;
 bool responseReceived;
-bool mqttConnected = false;
 bool oledButton = false;
-bool forcePush = false;
-bool sendMessagePeriod = false;
 bool waterLeak = false;	
-bool messageSent = false;
+bool sendMessage = true;
+bool configuredPSM = false;
+bool resetOLED = false;
 
 StatusType commandResponseStatus;
 
@@ -108,11 +107,10 @@ char commandResponse[RESPONSE_BUFFER_SIZE];
 
 char delimiter[4] = ",\r\n";
 char message[100];
-bool sendMessagePredically = true;
 
 float flow = 0; /* Lit per minute */
 int frequency = 0;
-float coefficient = 7.5;
+float coefficient;
 char bufferflow[20];
 float waterFlowPrevious;
 float waterFlowNow;
@@ -126,8 +124,10 @@ int pulse = 0;
 
 int counterOLEDDisplay = -1;
 int counterWaterLeakage = -1;
+int counterResetOLED = -1;
+int counterBattery = -1;
 int counterSendMessage = -1;
-int counter1second = 0;
+int counter1second = -1;
 int counterWaterRemainUnleak = -1;
 /**/
 
@@ -172,7 +172,7 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
 		}
 		waterFlowPrevious = waterFlowNow;
 		waterFlowNow = flow;
-		volume += (waterFlowNow + waterFlowPrevious)/2 * 0.01; /* Avarage flow rate per 10ms, then multiply with time to have the volume*/
+		volume += ((waterFlowNow + waterFlowPrevious)/2) * 0.01; /* Avarage flow rate per 10ms, then multiply with time to have the volume*/
 	}
 	if(htim->Instance == TIM2){ /* 1s */
 		if(oledButton){
@@ -189,21 +189,40 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
 //		}
 	}
 	if(htim->Instance == TIM3){ /* 1 minute */
-		// counter1minute++;
 		counterSendMessage++;
+		counterResetOLED++;
+		counterBattery++;
+		
 		if(counterSendMessage == 5){
-			messageSent = false;
-			programStage = 4;
+			sendMessage = true;
+			programStage = 1;
 			counterSendMessage = -1;
 		}
-		/* For Demo Purpose */
+		
+		/* Reset OLED */
+		
+		if(counterResetOLED == 7){
+			resetOLED = true;
+		}
+		
+		/* Low Battery Alert */
+		
+		if(counterBattery == 57){
+			HAL_ADC_Start_IT(&hadc1);
+			if(batteryVoltage < 2.6){
+				sendMessage = true;
+			}
+		}
+		
+		/* Leak Alert - For Demo Purpose */
 		if(flow == 0){
 			counterWaterLeakage++;
 			if(counterWaterLeakage == 5){
 				waterLeak = true;
+				sendMessage = true;
 				counterWaterLeakage = -1;
 			}
-		}else if(!waterLeak){
+		}else if(waterLeak){
 			counterWaterRemainUnleak++;
 			if(counterWaterRemainUnleak == 1){\
 				waterLeak = false;
@@ -222,7 +241,7 @@ void HAL_ADC_ConvCpltCallback(ADC_HandleTypeDef* hadc)
   UNUSED(hadc);
 	if(hadc->Instance == ADC1){
 		uint16_t u16_ADCVal = HAL_ADC_GetValue(&hadc1);
-		batteryVoltage = (((float) u16_ADCVal * 2)/4095)*3.3;
+		batteryVoltage = (((float) u16_ADCVal * 2)/4095)*3.6;
 	}
   /* NOTE : This function should not be modified. When the callback is needed,
             function HAL_ADC_ConvCpltCallback must be implemented in the user file.
@@ -486,14 +505,33 @@ StatusType setDefaultPSDConnection(){
 	return outputStatus;
 }
 
+StatusType configWakeupIndication(){
+	StatusType outputStatus = STATUS_UNKNOWN;
+	sendCommand("AT+CPSMSTATUS=1", RUN_COMMAND_COUNTER_DEFAULT, RUN_COMMAND_TIMEOUT_MS_DEFAULT);
+	outputStatus = commandResponseStatus;
+	return outputStatus;
+}
+
+StatusType configSlowClock(){
+	StatusType outputStatus = STATUS_UNKNOWN;
+	sendCommand("AT+CSCLK=2", RUN_COMMAND_COUNTER_DEFAULT, RUN_COMMAND_TIMEOUT_MS_DEFAULT);
+	outputStatus = commandResponseStatus;
+	return outputStatus;
+}
+
+StatusType configPSM(){
+	StatusType outputStatus = STATUS_UNKNOWN;
+	sendCommand("AT+CPSMS=1,,,\"01011111\",\"00000100\"", RUN_COMMAND_COUNTER_DEFAULT, RUN_COMMAND_TIMEOUT_MS_DEFAULT);
+	outputStatus = commandResponseStatus;
+	return outputStatus;
+}
+
 StatusType newMQTT(){
 	StatusType outputStatus = STATUS_UNKNOWN;
 	char command[50];
 	sprintf(command, "AT+CMQNEW=\"%s\",\"%i\",%u,%u", MQTT_SERVER, MQTT_PORT, MQTT_COMMAND_TIMEOUT_MS, MQTT_BUFFER_SIZE);
 	sendCommand(command, RUN_COMMAND_COUNTER_DEFAULT + 1, RUN_COMMAND_TIMEOUT_MS_DEFAULT + 3000);
 	outputStatus = commandResponseStatus;
-	/* +CEREG */
-	
 	return outputStatus;
 }
 
@@ -503,11 +541,6 @@ StatusType sendMQTTConnect(){
 	sprintf(command, "AT+CMQCON=%u,%u,\"%s\",%u,%u,%u",MQTT_ID, MQTT_VERSION, MQTT_CLIENT_ID, MQTT_KEEP_ALIVE_INTERVAL, MQTT_CONNECT_CLEAN_SESSION, MQTT_CONNECT_WILL_FLAG);
 	sendCommand(command, RUN_COMMAND_COUNTER_DEFAULT + 4, RUN_COMMAND_TIMEOUT_MS_DEFAULT + 4000);
 	outputStatus = commandResponseStatus;
-//	if(outputStatus == STATUS_SUCCESS){
-//		mqttConnected = true;
-//	}else{
-//		mqttConnected = false;
-//	}
 	return outputStatus;
 }
 
@@ -527,9 +560,6 @@ StatusType MQTTDisconnect(){
 	sprintf(command, "AT+CMQDISCON=%u", MQTT_ID);
 	sendCommand(command, RUN_COMMAND_COUNTER_DEFAULT, RUN_COMMAND_TIMEOUT_MS_DEFAULT);
 	outputStatus = commandResponseStatus;
-//	if(outputStatus != STATUS_SUCCESS){
-//		mqttConnected = false;
-//	}
 	return outputStatus;
 }
 
@@ -547,12 +577,13 @@ void moduleFlow(){
 			}
 			
 			if(setEchoMode() != STATUS_SUCCESS){
-				powerOffModule();
-				HAL_Delay(2000);
-				turnOnModule();
+				continue;
 			}
 			
 			if(checkSim() != STATUS_SUCCESS){
+				powerOffModule();
+				HAL_Delay(2000);
+				turnOnModule();
 				continue;
 			}
 			
@@ -580,7 +611,7 @@ void moduleFlow(){
 					programStage = 3;
 					break;
 				}
-				HAL_Delay(10000);
+				HAL_Delay(5000);
 			}
 			if(tryTimes == -1){ 
 				/* Cannot register automatically. Try to register manually 2 times */
@@ -607,13 +638,24 @@ void moduleFlow(){
 					powerOffModule();
 					programStage = 1;
 					HAL_Delay(2000);
-					turnOnModule();
 				}
 			}
 		}
 		
+		/* Configure PSM first time only*/
+		if(configuredPSM == true){
+			programStage = 4;
+		}
+		
 		/* Stage 3 - Configure PSM Feature*/
 		while(programStage == 3){
+			if(configWakeupIndication() != STATUS_SUCCESS){
+				continue;
+			}
+			if(configPSM() != STATUS_SUCCESS){
+				continue;
+			}
+			configuredPSM = true;
 			programStage = 4;
 			HAL_Delay(2000);
 		}
@@ -628,6 +670,10 @@ void moduleFlow(){
 			while(tryMQTT--){
 				if(newMQTT() == STATUS_SUCCESS){
 					break;
+				}else{
+					if(MQTTDisconnect() != STATUS_SUCCESS){
+						continue;
+					}
 				}
 			}
 			
@@ -643,15 +689,14 @@ void moduleFlow(){
 		
 			/* Send Message */
 			
-			if(readSignalQualityReport() != STATUS_SUCCESS){
-				continue;
-			}
+			//if(readSignalQualityReport() != STATUS_SUCCESS){
+			//	continue;
+			//}
 			int8_t trySend = 10;
-			HAL_ADC_Start_IT(&hadc1);
 			while(trySend--){
 				sprintf(message,"bat:%.1f,vol:%.1f,sig:%u,leak:%u", batteryVoltage, volume, rssi, waterLeak);
 				if(sendMQTTPub("watermeter1/messages", 1, 0, 0, message) == STATUS_SUCCESS){
-					messageSent = true;
+					sendMessage = false;
 					break;
 				}
 			}
@@ -670,26 +715,26 @@ void moduleFlow(){
 			programStage = 5;
 		}
 		
-		while(programStage == 5){
-			/* Turn Off Module */
-			powerOffModule();
-			programStage = 0;
-			HAL_Delay(2000);
-		}
+//		while(programStage == 5){
+//			/* Turn Off Module */
+//			powerOffModule();
+//			programStage = 0;
+//			HAL_Delay(2000);
+//		}
 		
 		/* What to do when MCU has free time ? */
 		passivelyListen = true;
 }
 
 void turnOnSSD1306(){
-	ssd1306_I2C_Write(0x78, 0x00, 0x8D);
-	ssd1306_I2C_Write(0x78, 0x00, 0x14);
+//	ssd1306_I2C_Write(0x78, 0x00, 0x8D);
+//	ssd1306_I2C_Write(0x78, 0x00, 0x14);
 	ssd1306_I2C_Write(0x78, 0x00, 0xAF);
 }
 
 void turnOffSSD1306(){
-	ssd1306_I2C_Write(0x78, 0x00, 0x8D);
-	ssd1306_I2C_Write(0x78, 0x00, 0x10);
+//	ssd1306_I2C_Write(0x78, 0x00, 0x8D);
+//	ssd1306_I2C_Write(0x78, 0x00, 0x10);
 	ssd1306_I2C_Write(0x78, 0x00, 0xAE);
 }
 
@@ -697,7 +742,7 @@ void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
 {
   /* Prevent unused argument(s) compilation warning */
 	currentMillis = HAL_GetTick();
-	if(GPIO_Pin == GPIO_PIN_10 && currentMillis - previosMillis > 500){
+	if(GPIO_Pin == GPIO_PIN_0 && currentMillis - previosMillis > 500){
 		oledButton = !oledButton;
 		previosMillis = currentMillis;
 		if(oledButton){
@@ -709,7 +754,8 @@ void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
 			SSD1306_Puts(bufferflow, &Font_11x18, 1);
 			HAL_ADC_Start_IT(&hadc1);
 			SSD1306_GotoXY(0,32);
-			sprintf(bufferflow, "AC: %2.1f", batteryVoltage);
+			// sprintf(bufferflow, "AC: %2.1f", batteryVoltage);
+			sprintf(bufferflow, "K: %2.1f", coefficient);
 			SSD1306_Puts(bufferflow, &Font_11x18, 1);	
 			/* Display Battery Icon */
 			
@@ -736,8 +782,12 @@ void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
 				}
 			}else{
 				if(rssi < 5){
-					SSD1306_DrawBitmap(112, 16, signal1_icon16x16, 16, 16, 1);
-				}else{
+					if(rssi == 0 || rssi == 99){
+						SSD1306_DrawBitmap(112, 16, cancel_icon16x16, 16, 16, 1);
+					}else{
+						SSD1306_DrawBitmap(112, 16, signal1_icon16x16, 16, 16, 1);
+					}
+				}else {
 					SSD1306_DrawBitmap(112, 16, signal2_icon16x16, 16, 16, 1);
 				}
 			}
@@ -803,6 +853,7 @@ int main(void)
 	HAL_TIM_Base_Start_IT(&htim4);
 	
 	SSD1306_Init();
+	HAL_ADC_Start_IT(&hadc1);
 	
   /* USER CODE END 2 */
 
@@ -810,12 +861,30 @@ int main(void)
   /* USER CODE BEGIN WHILE */
   while (1)
   {
-		if(!messageSent){
-			wakeUpModule();
+//		HAL_GPIO_WritePin(GPIOA, GPIO_PIN_9, GPIO_PIN_SET);
+//		HAL_Delay(1000);
+//		HAL_GPIO_WritePin(GPIOA, GPIO_PIN_9, GPIO_PIN_RESET);
+//		HAL_Delay(1000);
+//		HAL_GPIO_TogglePin(GPIOA, GPIO_PIN_10);
+//		HAL_GPIO_TogglePin(GPIOC, GPIO_PIN_13);
+//		HAL_Delay(1000);
+		//wakeUpModule();
+		//if(powerOffModule() != STATUS_SUCCESS){
+		//	wakeUpModule();
+		//	HAL_Delay(1000);
+		//}else{
+		//	HAL_Delay(5000);
+		//}
+		//HAL_GPIO_TogglePin(GPIOC, GPIO_PIN_13);
+		if(sendMessage){
+			turnOnModule();
 			moduleFlow();
 		}
+		if(resetOLED){
+			SSD1306_Init();
+		}
 		HAL_GPIO_TogglePin(GPIOC, GPIO_PIN_13);
-		HAL_Delay(500);
+		HAL_Delay(1000);
 //		SSD1306_GotoXY(0,0);
 //    sprintf(bufferflow, "SV:%2.1f %2.1f ", flow, volume);
 //		SSD1306_Puts(bufferflow, &Font_11x18, 1);
@@ -1170,13 +1239,13 @@ static void MX_GPIO_Init(void)
 
   /*Configure GPIO pin : PB0 */
   GPIO_InitStruct.Pin = GPIO_PIN_0;
-  GPIO_InitStruct.Mode = GPIO_MODE_IT_RISING;
+  GPIO_InitStruct.Mode = GPIO_MODE_IT_FALLING;
   GPIO_InitStruct.Pull = GPIO_PULLUP;
   HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
 
   /*Configure GPIO pin : PB10 */
   GPIO_InitStruct.Pin = GPIO_PIN_10;
-  GPIO_InitStruct.Mode = GPIO_MODE_IT_FALLING;
+  GPIO_InitStruct.Mode = GPIO_MODE_IT_RISING;
   GPIO_InitStruct.Pull = GPIO_PULLUP;
   HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
 
