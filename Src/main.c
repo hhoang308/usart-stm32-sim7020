@@ -179,7 +179,7 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
 			counterOLEDDisplay++;
 			if(counterOLEDDisplay == 5){
 				counterOLEDDisplay = 0;
-				HAL_GPIO_EXTI_Callback(GPIO_PIN_10);
+				HAL_GPIO_EXTI_Callback(GPIO_PIN_0);
 			}
 		}
 //		counter1second++;
