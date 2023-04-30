@@ -54,7 +54,6 @@ ADC_HandleTypeDef hadc1;
 I2C_HandleTypeDef hi2c1;
 
 TIM_HandleTypeDef htim2;
-TIM_HandleTypeDef htim3;
 TIM_HandleTypeDef htim4;
 
 UART_HandleTypeDef huart2;
@@ -72,7 +71,6 @@ static void MX_USART2_UART_Init(void);
 static void MX_ADC1_Init(void);
 static void MX_I2C1_Init(void);
 static void MX_TIM2_Init(void);
-static void MX_TIM3_Init(void);
 static void MX_TIM4_Init(void);
 /* USER CODE BEGIN PFP */
 
@@ -83,22 +81,30 @@ static void MX_TIM4_Init(void);
 
 uint16_t oldPos = 0;
 uint16_t newPos = 0;
-int rssi = -1;
+volatile int rssi = -1;
 int ber = -1;
 uint8_t networkRegistered;
-uint8_t programStage = 1;
+volatile uint8_t programStage = 1;
+
+uint16_t u16_ADCVal = 0;
 
 uint32_t currentMillis = 0;
 uint32_t previosMillis = 0;
 
 bool passivelyListen = false;
 bool responseReceived;
-bool oledButton = false;
-bool waterLeak = false;	
-bool sendMessage = true;
-bool configuredPSM = false;
-bool resetOLED = false;
+volatile bool mqttParemeterConnected = false;
+volatile bool oledButton = false;
+volatile bool waterLeak = false;	
+volatile bool sendMessage = true;
+volatile bool resetOLED = false;
+volatile bool batteryCalculate = true;
 
+//bool sendMessagePeriod = true;
+//volatile bool sendMessageWaterLeak = false;
+//volatile bool sendMessageLowBattery = false;
+volatile bool OLEDTurnedOff;
+	
 StatusType commandResponseStatus;
 
 char responseReceiveBuffer[RESPONSE_BUFFER_SIZE];
@@ -114,22 +120,34 @@ float coefficient;
 char bufferflow[20];
 float waterFlowPrevious;
 float waterFlowNow;
-float volume = 0; 
-float batteryVoltage = 3.3;
+volatile float volume = 0; 
+volatile float batteryVoltage = 3.3;
 
 int counter10ms = 0;
 int pulse = 0;
 
 /**/
 
-int counterOLEDDisplay = -1;
-int counterWaterLeakage = -1;
-int counterResetOLED = -1;
-int counterBattery = -1;
+int counterOLEDDisplay = 0;
+int counterWaterLeakage = 0;
+int counterResetOLED = 0;
+int counterBattery = 0;
 int counterSendMessage = -1;
-int counter1second = -1;
-int counterWaterRemainUnleak = -1;
+int counterWaterRemainUnleak = 0;
+
 /**/
+
+void turnOnSSD1306(){
+//	ssd1306_I2C_Write(0x78, 0x00, 0x8D);
+//	ssd1306_I2C_Write(0x78, 0x00, 0x14);
+	ssd1306_I2C_Write(0x78, 0x00, 0xAF);
+}
+
+void turnOffSSD1306(){
+//	ssd1306_I2C_Write(0x78, 0x00, 0x8D);
+//	ssd1306_I2C_Write(0x78, 0x00, 0x10);
+	ssd1306_I2C_Write(0x78, 0x00, 0xAE);
+}
 
 void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
 {
@@ -139,26 +157,26 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
 		counter10ms++;
 		if(counter10ms == 10){ /* Calculate each 100ms */
 			frequency = pulse * 10;
-			if(frequency < 49.3){
+			if(frequency < 50){
 				if(frequency < 16){
 					coefficient = frequency/2;  /* 0 -> 16 */
-				}else if(frequency > 32.5){
-					coefficient = (frequency + 1451.195) / 182.608; /* 32.5 -> 49.3 */
+				}else if(frequency > 32){
+					coefficient = 0.0054 * frequency + 7.947; /* 32.5 -> 49.3 */
 				}else{
-					coefficient = (frequency + 1040) / 132; /* 16 -> 32.5*/
+					coefficient = 0.0076 * frequency + 7.879; /* 16 -> 32.5*/
 				}
 			}else{
 				if(frequency < 82){
-					if(frequency < 65.5){
-						coefficient = (4561.686 - frequency) / 549.153; /* 49.3 -> 65.5 */
+					if(frequency < 66){
+						coefficient = -0.0018 * frequency + 8.307; /* 49.3 -> 65.5 */
 					}else{
-						coefficient = (frequency + 10742) / 1320; /* 65.5 -> 82 */
+						coefficient = 0.0008 * frequency + 8.138; /* 65.5 -> 82 */
 					}
 				}else{
-					if(frequency < 90.2){
-						coefficient = -(frequency - 180.304) / 11.988; /* 82 -> 90.2 */
+					if(frequency < 91){
+						coefficient = -0.0834 * frequency + 15.04; /* 82 -> 90.2 */
 					}else{
-						coefficient = 7.5; /* > 90.2 */
+						coefficient = 7.512; /* > 90.2 */
 					}
 				}
 			}
@@ -175,64 +193,71 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
 		volume += ((waterFlowNow + waterFlowPrevious)/2) * 0.01; /* Avarage flow rate per 10ms, then multiply with time to have the volume*/
 	}
 	if(htim->Instance == TIM2){ /* 1s */
+		/* Send Message */
+		
+		if(!sendMessage){
+			counterSendMessage++;
+			if(counterSendMessage == 16 * 60){
+				sendMessage = true;
+				programStage = 1;
+			}
+		}else{
+			counterSendMessage = 0;
+		}
+		
+		/* Turn Off OLED*/
+		
 		if(oledButton){
 			counterOLEDDisplay++;
-			if(counterOLEDDisplay == 5){
-				counterOLEDDisplay = 0;
-				HAL_GPIO_EXTI_Callback(GPIO_PIN_0);
+			if(counterOLEDDisplay == 6){
+				oledButton = false;
+				OLEDTurnedOff = false;
 			}
-		}
-//		counter1second++;
-//		if(counter1second == 8){
-//			waterLeak = !waterLeak;
-//			counter1second = 0;
-//		}
-	}
-	if(htim->Instance == TIM3){ /* 1 minute */
-		counterSendMessage++;
-		counterResetOLED++;
-		counterBattery++;
-		
-		if(counterSendMessage == 5){
-			sendMessage = true;
-			programStage = 1;
-			counterSendMessage = -1;
-		}
-		
-		/* Reset OLED */
-		
-		if(counterResetOLED == 7){
-			resetOLED = true;
+		}else{
+			counterOLEDDisplay = 0;
 		}
 		
 		/* Low Battery Alert */
 		
-		if(counterBattery == 57){
-			HAL_ADC_Start_IT(&hadc1);
-			if(batteryVoltage < 2.6){
-				sendMessage = true;
+		if(!batteryCalculate){
+			counterBattery++;
+			if(counterBattery == 61 * 60){
+				batteryCalculate = true;
 			}
+		}else{
+			counterBattery = 0;
 		}
 		
-		/* Leak Alert - For Demo Purpose */
-		if(flow == 0){
+		/* Reset OLED */
+		
+		if(!resetOLED){
+			counterResetOLED++;
+			if(counterResetOLED == 13 * 60){
+				resetOLED = true;
+			}
+		}else{
+			counterResetOLED = 0;
+		}
+		
+		/* Leak Alert - Real*/
+		if(flow > 0){
 			counterWaterLeakage++;
-			if(counterWaterLeakage == 5){
+			if(counterWaterLeakage == 60 * 60){
 				waterLeak = true;
 				sendMessage = true;
-				counterWaterLeakage = -1;
+				counterWaterLeakage = 0;
 			}
-		}else if(waterLeak){
-			counterWaterRemainUnleak++;
-			if(counterWaterRemainUnleak == 1){\
-				waterLeak = false;
-				counterWaterRemainUnleak = -1;
+		}else{
+			if(waterLeak){
+				counterWaterRemainUnleak++;
+				if(counterWaterRemainUnleak == 20 * 60){
+					waterLeak = false;
+					sendMessage = true;
+					counterWaterRemainUnleak = 0;
+				}
 			}
 		}
 	}
-  /* NOTE : This function should not be modified, when the callback is needed,
-            the HAL_TIM_PeriodElapsedCallback could be implemented in the user file
-   */
 }
 
 void HAL_ADC_ConvCpltCallback(ADC_HandleTypeDef* hadc)
@@ -240,8 +265,8 @@ void HAL_ADC_ConvCpltCallback(ADC_HandleTypeDef* hadc)
   /* Prevent unused argument(s) compilation warning */
   UNUSED(hadc);
 	if(hadc->Instance == ADC1){
-		uint16_t u16_ADCVal = HAL_ADC_GetValue(&hadc1);
-		batteryVoltage = (((float) u16_ADCVal * 2)/4095)*3.6;
+		u16_ADCVal = HAL_ADC_GetValue(&hadc1);
+		batteryVoltage = (((float) u16_ADCVal * 2)/4095)*3.3;
 	}
   /* NOTE : This function should not be modified. When the callback is needed,
             function HAL_ADC_ConvCpltCallback must be implemented in the user file.
@@ -258,15 +283,11 @@ void turnOnModule(){
 
 void wakeUpModule(){
 	/* Pull Up/Down PWR key depend on Module*/
-	uint8_t count = 2;
-	while(count--){
-		HAL_GPIO_WritePin(GPIOA, GPIO_PIN_9, GPIO_PIN_SET);
-		/* Delay 60ms (According to Hardware Design Datasheet */
-		HAL_Delay(60);
-		HAL_GPIO_WritePin(GPIOA, GPIO_PIN_9, GPIO_PIN_RESET);
-		HAL_Delay(200);
-	}
+	HAL_GPIO_WritePin(GPIOA, GPIO_PIN_9, GPIO_PIN_SET);
+	/* Delay 60ms (According to Hardware Design Datasheet */
+	HAL_Delay(60);
 	HAL_GPIO_WritePin(GPIOA, GPIO_PIN_9, GPIO_PIN_RESET);
+	HAL_Delay(200);
 }
 
 void resetDMAInterrupt(){
@@ -388,7 +409,7 @@ void HAL_UARTEx_RxEventCallback(UART_HandleTypeDef *huart, uint16_t Size)
    */
 }
 
-StatusType powerOffModule(){
+StatusType turnOffModule(){
 	StatusType outputStatus = STATUS_UNKNOWN;
 	passivelyListen = true;
 	sendCommand("AT+CPOWD=1", 1, RUN_COMMAND_TIMEOUT_MS_DEFAULT);
@@ -526,6 +547,45 @@ StatusType configPSM(){
 	return outputStatus;
 }
 
+StatusType checkMQTTConnection(){
+	StatusType outputStatus = STATUS_UNKNOWN;
+	sendCommand("AT+CMQNEW?", RUN_COMMAND_COUNTER_DEFAULT + 1, RUN_COMMAND_TIMEOUT_MS_DEFAULT);
+	outputStatus = commandResponseStatus;
+	if(outputStatus == STATUS_SUCCESS){
+		/* Registered */
+		
+		uint8_t numberOfElements = 3;
+		char *data_pointer;
+		char *token;
+		char *token_array[numberOfElements];
+		uint8_t i = 0;
+		
+		data_pointer = strstr(commandResponse, ":");
+		data_pointer = data_pointer + 2;
+		
+		if(!data_pointer){
+			outputStatus = STATUS_FAILURE;
+			return outputStatus;
+		}
+		
+		token = strtok(data_pointer, delimiter);
+		
+		while(token != NULL && i < numberOfElements){
+			token_array[i] = token;
+			token = strtok(NULL, delimiter);
+			i++;
+		}
+		
+		if(!strcmp(token_array[2],"null")){
+			mqttParemeterConnected = false;
+		}else{
+			mqttParemeterConnected = true;
+		}
+
+	} 
+	return outputStatus;
+}
+
 StatusType newMQTT(){
 	StatusType outputStatus = STATUS_UNKNOWN;
 	char command[50];
@@ -564,11 +624,13 @@ StatusType MQTTDisconnect(){
 }
 
 void moduleFlow(){
-	/* Stage 1 - Set Up Module */
+	
+	/* Stage 1 - Set Up Module */	
+	
 		while(programStage == 1){
 			
 			if(checkModule() != STATUS_SUCCESS){
-				wakeUpModule();
+				turnOnModule();
 				continue;
 			}
 			
@@ -581,15 +643,15 @@ void moduleFlow(){
 			}
 			
 			if(checkSim() != STATUS_SUCCESS){
-				powerOffModule();
+				turnOffModule();
 				HAL_Delay(2000);
 				turnOnModule();
 				continue;
 			}
 			
-			if(getAndSetOperationalBand() != STATUS_SUCCESS){
-				continue;
-			}
+//			if(getAndSetOperationalBand() != STATUS_SUCCESS){
+//				continue;
+//			}
 			
 			HAL_Delay(2000);
 			programStage = 2;	
@@ -597,19 +659,21 @@ void moduleFlow(){
 		}
 		/* Stage 2 - Check Network */
 		
-		int8_t tryTimes = 3;
+		int8_t tryTimes = 4;
 		
 		while(programStage == 2){	
 			/* Check Registration Status */
 			while (tryTimes--){
 				/* AT+CREG */
+				
+				if(readNetworkRegistrationStatus() == STATUS_SUCCESS && networkRegistered == 1){	
+					programStage = 3;
+					break;
+				}
+				
 				if(tryTimes < 2){
 					wakeUpModule();
 					HAL_Delay(1000);
-				}
-				if(readNetworkRegistrationStatus() == STATUS_SUCCESS){	
-					programStage = 3;
-					break;
 				}
 				HAL_Delay(5000);
 			}
@@ -629,57 +693,73 @@ void moduleFlow(){
 						continue;
 					}
 					
-					if(readNetworkRegistrationStatus() == STATUS_SUCCESS){
+					if(readNetworkRegistrationStatus() == STATUS_SUCCESS && networkRegistered == 1){
 						programStage = 3;
 						break;
 					}		
 				}
 				if(tryManually == -1){
-					powerOffModule();
+					turnOffModule();
 					programStage = 1;
 					HAL_Delay(2000);
+					break;
 				}
 			}
 		}
 		
 		/* Configure PSM first time only*/
-		if(configuredPSM == true){
-			programStage = 4;
-		}
 		
-		/* Stage 3 - Configure PSM Feature*/
 		while(programStage == 3){
-			if(configWakeupIndication() != STATUS_SUCCESS){
-				continue;
-			}
-			if(configPSM() != STATUS_SUCCESS){
-				continue;
-			}
-			configuredPSM = true;
 			programStage = 4;
-			HAL_Delay(2000);
-		}
+			break;
+	  }
+		
+//		if(configuredPSM == true){
+//			programStage = 4;
+//		}
+//		
+//		/* Stage 3 - Configure PSM Feature*/
+//		while(programStage == 3){
+//			if(configWakeupIndication() != STATUS_SUCCESS){
+//				continue;
+//			}
+//			if(configPSM() != STATUS_SUCCESS){
+//				continue;
+//			}
+//			configuredPSM = true;
+//			programStage = 4;
+//			HAL_Delay(2000);
+//		}
 		
 		/* Stage 4 - MQTT */
+		
 		
 		/* Send message on period */
 		int8_t tryMQTT;
 		while(programStage == 4){
+			
+			if(checkMQTTConnection() != STATUS_SUCCESS){
+				continue;
+			}
+			
+			if(mqttParemeterConnected){
+				if(MQTTDisconnect() != STATUS_SUCCESS){
+					continue;
+				}
+			}
+			
 			tryMQTT = 3;
 			
 			while(tryMQTT--){
 				if(newMQTT() == STATUS_SUCCESS){
 					break;
-				}else{
-					if(MQTTDisconnect() != STATUS_SUCCESS){
-						continue;
-					}
 				}
+				HAL_Delay(1000);
 			}
 			
 			if(tryMQTT == -1){
-				powerOffModule();
-				HAL_Delay(2000);
+				turnOffModule();
+				HAL_Delay(1000);
 				turnOnModule();
 			}
 			
@@ -689,74 +769,61 @@ void moduleFlow(){
 		
 			/* Send Message */
 			
-			//if(readSignalQualityReport() != STATUS_SUCCESS){
-			//	continue;
-			//}
-			int8_t trySend = 10;
+			int8_t trySend = 4;
+			sprintf(message,"bat:%.1f,vol:%.1f,sig:%u,leak:%u", batteryVoltage, volume, rssi, waterLeak);
 			while(trySend--){
-				sprintf(message,"bat:%.1f,vol:%.1f,sig:%u,leak:%u", batteryVoltage, volume, rssi, waterLeak);
 				if(sendMQTTPub("watermeter1/messages", 1, 0, 0, message) == STATUS_SUCCESS){
 					sendMessage = false;
 					break;
+				}else{
+					turnOnModule();
+					continue;
 				}
 			}
 			
 			/* Failed to send message*/
-			/* Clear PSM (if necessary) */
+			
 			if(trySend == -1){
-				wakeUpModule();
+				turnOffModule();
+				programStage = 1;
 				break;
 			}
 		
 			if(MQTTDisconnect() != STATUS_SUCCESS){
 				continue;
 			}
+			
 			HAL_Delay(1000);
 			programStage = 5;
 		}
 		
-//		while(programStage == 5){
-//			/* Turn Off Module */
-//			powerOffModule();
-//			programStage = 0;
-//			HAL_Delay(2000);
-//		}
-		
 		/* What to do when MCU has free time ? */
 		passivelyListen = true;
-}
-
-void turnOnSSD1306(){
-//	ssd1306_I2C_Write(0x78, 0x00, 0x8D);
-//	ssd1306_I2C_Write(0x78, 0x00, 0x14);
-	ssd1306_I2C_Write(0x78, 0x00, 0xAF);
-}
-
-void turnOffSSD1306(){
-//	ssd1306_I2C_Write(0x78, 0x00, 0x8D);
-//	ssd1306_I2C_Write(0x78, 0x00, 0x10);
-	ssd1306_I2C_Write(0x78, 0x00, 0xAE);
 }
 
 void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
 {
   /* Prevent unused argument(s) compilation warning */
 	currentMillis = HAL_GetTick();
-	if(GPIO_Pin == GPIO_PIN_0 && currentMillis - previosMillis > 500){
-		oledButton = !oledButton;
+	if(GPIO_Pin == GPIO_PIN_0 && currentMillis - previosMillis > 200){
+		oledButton = true;
 		previosMillis = currentMillis;
-		if(oledButton){
-			/* Display OLED */
-			SSD1306_Clear();
+	}
+  /* NOTE: This function Should not be modified, when the callback is needed,
+           the HAL_GPIO_EXTI_Callback could be implemented in the user file
+   */
+}
+
+void setUpSSD1306(){
 			turnOnSSD1306();
-			SSD1306_GotoXY(0,0);
-			sprintf(bufferflow, "%2.f L", volume);
-			SSD1306_Puts(bufferflow, &Font_11x18, 1);
-			HAL_ADC_Start_IT(&hadc1);
-			SSD1306_GotoXY(0,32);
+			SSD1306_GotoXY(0,10);
+			sprintf(bufferflow, "%2.2f", volume);
+			SSD1306_Puts(bufferflow, &Font_16x26, 1);
+//			HAL_ADC_Start_IT(&hadc1);
+			SSD1306_GotoXY(56,37);
 			// sprintf(bufferflow, "AC: %2.1f", batteryVoltage);
-			sprintf(bufferflow, "K: %2.1f", coefficient);
-			SSD1306_Puts(bufferflow, &Font_11x18, 1);	
+//			sprintf(bufferflow, "K: %2.21f", coefficient);
+			SSD1306_Puts("dm3", &Font_11x18, 1);	
 			/* Display Battery Icon */
 			
 			if(batteryVoltage > 2.8){
@@ -776,13 +843,17 @@ void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
 			
 			if(rssi > 10){
 				if(rssi > 20){
-					SSD1306_DrawBitmap(112, 16, signal4_icon16x16, 16, 16, 1);
+					if(rssi == 99){
+						SSD1306_DrawBitmap(112, 16, cancel_icon16x16, 16, 16, 1);
+					}else{
+						SSD1306_DrawBitmap(112, 16, signal4_icon16x16, 16, 16, 1);
+					}
 				}else{
 					SSD1306_DrawBitmap(112, 16, signal3_icon16x16, 16, 16, 1);
 				}
 			}else{
 				if(rssi < 5){
-					if(rssi == 0 || rssi == 99){
+					if(rssi == 0){
 						SSD1306_DrawBitmap(112, 16, cancel_icon16x16, 16, 16, 1);
 					}else{
 						SSD1306_DrawBitmap(112, 16, signal1_icon16x16, 16, 16, 1);
@@ -799,14 +870,6 @@ void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
 			}
 			
 			SSD1306_UpdateScreen();
-		}else{
-			/* Turn Off OLED */
-			turnOffSSD1306();
-		}
-	}
-  /* NOTE: This function Should not be modified, when the callback is needed,
-           the HAL_GPIO_EXTI_Callback could be implemented in the user file
-   */
 }
 
 /* USER CODE END 0 */
@@ -818,7 +881,7 @@ void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
 int main(void)
 {
   /* USER CODE BEGIN 1 */
-
+	
   /* USER CODE END 1 */
 
   /* MCU Configuration--------------------------------------------------------*/
@@ -844,12 +907,10 @@ int main(void)
   MX_ADC1_Init();
   MX_I2C1_Init();
   MX_TIM2_Init();
-  MX_TIM3_Init();
   MX_TIM4_Init();
   /* USER CODE BEGIN 2 */
 	
 	HAL_TIM_Base_Start_IT(&htim2);
-	HAL_TIM_Base_Start_IT(&htim3);
 	HAL_TIM_Base_Start_IT(&htim4);
 	
 	SSD1306_Init();
@@ -861,39 +922,38 @@ int main(void)
   /* USER CODE BEGIN WHILE */
   while (1)
   {
-//		HAL_GPIO_WritePin(GPIOA, GPIO_PIN_9, GPIO_PIN_SET);
-//		HAL_Delay(1000);
-//		HAL_GPIO_WritePin(GPIOA, GPIO_PIN_9, GPIO_PIN_RESET);
-//		HAL_Delay(1000);
-//		HAL_GPIO_TogglePin(GPIOA, GPIO_PIN_10);
-//		HAL_GPIO_TogglePin(GPIOC, GPIO_PIN_13);
-//		HAL_Delay(1000);
-		//wakeUpModule();
-		//if(powerOffModule() != STATUS_SUCCESS){
-		//	wakeUpModule();
-		//	HAL_Delay(1000);
-		//}else{
-		//	HAL_Delay(5000);
-		//}
-		//HAL_GPIO_TogglePin(GPIOC, GPIO_PIN_13);
+//		if(sendMessagePeriod || sendMessageLowBattery || sendMessageWaterLeak){
+//			sendMessage = true;
+//			sendMessagePeriod = false;
+//			sendMessageLowBattery = false;
+//			sendMessageWaterLeak = false;
+//		}
 		if(sendMessage){
 			turnOnModule();
-			moduleFlow();
+			moduleFlow();		
+		}
+		if(oledButton){
+			setUpSSD1306();
+		}else{
+			if(!OLEDTurnedOff){
+				turnOffSSD1306();
+				OLEDTurnedOff = true;
+			}
 		}
 		if(resetOLED){
 			SSD1306_Init();
+			resetOLED = false;
+		}
+		if(batteryCalculate){
+			HAL_ADC_Start_IT(&hadc1);
+			if(batteryVoltage < 3.2){
+				sendMessage = true;
+			}
+			batteryCalculate = false;
 		}
 		HAL_GPIO_TogglePin(GPIOC, GPIO_PIN_13);
-		HAL_Delay(1000);
-//		SSD1306_GotoXY(0,0);
-//    sprintf(bufferflow, "SV:%2.1f %2.1f ", flow, volume);
-//		SSD1306_Puts(bufferflow, &Font_11x18, 1);
-//		SSD1306_GotoXY(0,32);
-//		HAL_ADC_Start_IT(&hadc1);
-//		sprintf(bufferflow, "ADC: %2.1f", batteryVoltage);
-//		SSD1306_Puts(bufferflow, &Font_11x18, 1);
-//		SSD1306_UpdateScreen();
-//		HAL_Delay(500);
+		HAL_Delay(1000);		
+		
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
@@ -914,10 +974,13 @@ void SystemClock_Config(void)
   /** Initializes the RCC Oscillators according to the specified parameters
   * in the RCC_OscInitTypeDef structure.
   */
-  RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_HSI;
+  RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_HSE;
+  RCC_OscInitStruct.HSEState = RCC_HSE_ON;
+  RCC_OscInitStruct.HSEPredivValue = RCC_HSE_PREDIV_DIV1;
   RCC_OscInitStruct.HSIState = RCC_HSI_ON;
-  RCC_OscInitStruct.HSICalibrationValue = RCC_HSICALIBRATION_DEFAULT;
-  RCC_OscInitStruct.PLL.PLLState = RCC_PLL_NONE;
+  RCC_OscInitStruct.PLL.PLLState = RCC_PLL_ON;
+  RCC_OscInitStruct.PLL.PLLSource = RCC_PLLSOURCE_HSE;
+  RCC_OscInitStruct.PLL.PLLMUL = RCC_PLL_MUL9;
   if (HAL_RCC_OscConfig(&RCC_OscInitStruct) != HAL_OK)
   {
     Error_Handler();
@@ -927,17 +990,17 @@ void SystemClock_Config(void)
   */
   RCC_ClkInitStruct.ClockType = RCC_CLOCKTYPE_HCLK|RCC_CLOCKTYPE_SYSCLK
                               |RCC_CLOCKTYPE_PCLK1|RCC_CLOCKTYPE_PCLK2;
-  RCC_ClkInitStruct.SYSCLKSource = RCC_SYSCLKSOURCE_HSI;
+  RCC_ClkInitStruct.SYSCLKSource = RCC_SYSCLKSOURCE_PLLCLK;
   RCC_ClkInitStruct.AHBCLKDivider = RCC_SYSCLK_DIV1;
-  RCC_ClkInitStruct.APB1CLKDivider = RCC_HCLK_DIV1;
+  RCC_ClkInitStruct.APB1CLKDivider = RCC_HCLK_DIV2;
   RCC_ClkInitStruct.APB2CLKDivider = RCC_HCLK_DIV1;
 
-  if (HAL_RCC_ClockConfig(&RCC_ClkInitStruct, FLASH_LATENCY_0) != HAL_OK)
+  if (HAL_RCC_ClockConfig(&RCC_ClkInitStruct, FLASH_LATENCY_2) != HAL_OK)
   {
     Error_Handler();
   }
   PeriphClkInit.PeriphClockSelection = RCC_PERIPHCLK_ADC;
-  PeriphClkInit.AdcClockSelection = RCC_ADCPCLK2_DIV2;
+  PeriphClkInit.AdcClockSelection = RCC_ADCPCLK2_DIV6;
   if (HAL_RCCEx_PeriphCLKConfig(&PeriphClkInit) != HAL_OK)
   {
     Error_Handler();
@@ -1044,9 +1107,9 @@ static void MX_TIM2_Init(void)
 
   /* USER CODE END TIM2_Init 1 */
   htim2.Instance = TIM2;
-  htim2.Init.Prescaler = 8000-1;
+  htim2.Init.Prescaler = 36000-1;
   htim2.Init.CounterMode = TIM_COUNTERMODE_UP;
-  htim2.Init.Period = 1000-1;
+  htim2.Init.Period = 2000-1;
   htim2.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
   htim2.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
   if (HAL_TIM_Base_Init(&htim2) != HAL_OK)
@@ -1071,51 +1134,6 @@ static void MX_TIM2_Init(void)
 }
 
 /**
-  * @brief TIM3 Initialization Function
-  * @param None
-  * @retval None
-  */
-static void MX_TIM3_Init(void)
-{
-
-  /* USER CODE BEGIN TIM3_Init 0 */
-
-  /* USER CODE END TIM3_Init 0 */
-
-  TIM_ClockConfigTypeDef sClockSourceConfig = {0};
-  TIM_MasterConfigTypeDef sMasterConfig = {0};
-
-  /* USER CODE BEGIN TIM3_Init 1 */
-
-  /* USER CODE END TIM3_Init 1 */
-  htim3.Instance = TIM3;
-  htim3.Init.Prescaler = 8000-1;
-  htim3.Init.CounterMode = TIM_COUNTERMODE_UP;
-  htim3.Init.Period = 60000-1;
-  htim3.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
-  htim3.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
-  if (HAL_TIM_Base_Init(&htim3) != HAL_OK)
-  {
-    Error_Handler();
-  }
-  sClockSourceConfig.ClockSource = TIM_CLOCKSOURCE_INTERNAL;
-  if (HAL_TIM_ConfigClockSource(&htim3, &sClockSourceConfig) != HAL_OK)
-  {
-    Error_Handler();
-  }
-  sMasterConfig.MasterOutputTrigger = TIM_TRGO_RESET;
-  sMasterConfig.MasterSlaveMode = TIM_MASTERSLAVEMODE_DISABLE;
-  if (HAL_TIMEx_MasterConfigSynchronization(&htim3, &sMasterConfig) != HAL_OK)
-  {
-    Error_Handler();
-  }
-  /* USER CODE BEGIN TIM3_Init 2 */
-
-  /* USER CODE END TIM3_Init 2 */
-
-}
-
-/**
   * @brief TIM4 Initialization Function
   * @param None
   * @retval None
@@ -1134,9 +1152,9 @@ static void MX_TIM4_Init(void)
 
   /* USER CODE END TIM4_Init 1 */
   htim4.Instance = TIM4;
-  htim4.Init.Prescaler = 8000-1;
+  htim4.Init.Prescaler = 36000-1;
   htim4.Init.CounterMode = TIM_COUNTERMODE_UP;
-  htim4.Init.Period = 10-1;
+  htim4.Init.Period = 2-1;
   htim4.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
   htim4.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
   if (HAL_TIM_Base_Init(&htim4) != HAL_OK)
@@ -1204,7 +1222,7 @@ static void MX_DMA_Init(void)
 
   /* DMA interrupt init */
   /* DMA1_Channel6_IRQn interrupt configuration */
-  HAL_NVIC_SetPriority(DMA1_Channel6_IRQn, 1, 0);
+  HAL_NVIC_SetPriority(DMA1_Channel6_IRQn, 0, 0);
   HAL_NVIC_EnableIRQ(DMA1_Channel6_IRQn);
 
 }
@@ -1260,7 +1278,7 @@ static void MX_GPIO_Init(void)
   HAL_NVIC_SetPriority(EXTI0_IRQn, 0, 0);
   HAL_NVIC_EnableIRQ(EXTI0_IRQn);
 
-  HAL_NVIC_SetPriority(EXTI15_10_IRQn, 2, 0);
+  HAL_NVIC_SetPriority(EXTI15_10_IRQn, 0, 0);
   HAL_NVIC_EnableIRQ(EXTI15_10_IRQn);
 
 }
