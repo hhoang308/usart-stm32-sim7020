@@ -278,6 +278,8 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
 					sendMessage = true;
 					counterWaterRemainUnleak = 0;
 				}
+			}else{
+				counterWaterLeakage = 0;
 			}
 		}
 	}
