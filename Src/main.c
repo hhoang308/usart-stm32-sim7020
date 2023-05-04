@@ -53,6 +53,7 @@ ADC_HandleTypeDef hadc1;
 
 I2C_HandleTypeDef hi2c1;
 
+TIM_HandleTypeDef htim1;
 TIM_HandleTypeDef htim2;
 TIM_HandleTypeDef htim4;
 
@@ -72,6 +73,7 @@ static void MX_ADC1_Init(void);
 static void MX_I2C1_Init(void);
 static void MX_TIM2_Init(void);
 static void MX_TIM4_Init(void);
+static void MX_TIM1_Init(void);
 /* USER CODE BEGIN PFP */
 
 /* USER CODE END PFP */
@@ -90,6 +92,8 @@ uint16_t u16_ADCVal = 0;
 
 uint32_t currentMillis = 0;
 uint32_t previosMillis = 0;
+
+uint32_t timerSendMessage = 0;
 
 bool passivelyListen = false;
 bool responseReceived;
@@ -122,8 +126,6 @@ float waterFlowPrevious;
 float waterFlowNow;
 volatile float volume = 0; 
 volatile float batteryVoltage = 3.3;
-
-int counter10ms = 0;
 int pulse = 0;
 
 /**/
@@ -138,14 +140,14 @@ int counterWaterRemainUnleak = 0;
 /**/
 
 void turnOnSSD1306(){
-//	ssd1306_I2C_Write(0x78, 0x00, 0x8D);
-//	ssd1306_I2C_Write(0x78, 0x00, 0x14);
+	ssd1306_I2C_Write(0x78, 0x00, 0x8D);
+	ssd1306_I2C_Write(0x78, 0x00, 0x14);
 	ssd1306_I2C_Write(0x78, 0x00, 0xAF);
 }
 
 void turnOffSSD1306(){
-//	ssd1306_I2C_Write(0x78, 0x00, 0x8D);
-//	ssd1306_I2C_Write(0x78, 0x00, 0x10);
+	ssd1306_I2C_Write(0x78, 0x00, 0x8D);
+	ssd1306_I2C_Write(0x78, 0x00, 0x10);
 	ssd1306_I2C_Write(0x78, 0x00, 0xAE);
 }
 
@@ -153,51 +155,75 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
 {
   /* Prevent unused argument(s) compilation warning */
 	UNUSED(htim);
-	if(htim->Instance == TIM4){ /* 10ms */
-		counter10ms++;
-		if(counter10ms == 10){ /* Calculate each 100ms */
-			frequency = pulse * 10;
-			if(frequency < 50){
-				if(frequency < 16){
-					coefficient = frequency/2;  /* 0 -> 16 */
-				}else if(frequency > 32){
-					coefficient = 0.0054 * frequency + 7.947; /* 32.5 -> 49.3 */
-				}else{
-					coefficient = 0.0076 * frequency + 7.879; /* 16 -> 32.5*/
-				}
-			}else{
-				if(frequency < 82){
-					if(frequency < 66){
-						coefficient = -0.0018 * frequency + 8.307; /* 49.3 -> 65.5 */
-					}else{
-						coefficient = 0.0008 * frequency + 8.138; /* 65.5 -> 82 */
-					}
-				}else{
-					if(frequency < 91){
-						coefficient = -0.0834 * frequency + 15.04; /* 82 -> 90.2 */
-					}else{
-						coefficient = 7.512; /* > 90.2 */
-					}
-				}
-			}
-			if(coefficient == 0){
-				flow = 0;
-			}else{
-				flow = frequency / (coefficient * 60) ; /* pulse * 10 = frequency, 7.5 is a parameter number based on datasheet, lit/minute to lit/second */
-			}
-			counter10ms = 0;
-			pulse = 0;
+	if(htim->Instance == TIM1){ /* 62.5 ms */
+		frequency = pulse * 16;
+		if(frequency == 16){
+			coefficient = 8.1;
+		}else if(frequency == 32){
+			coefficient = 8.109;
+		}else if(frequency == 48){
+			coefficient = 8.2062;
+		}else if(frequency == 64){
+			coefficient = 8.1608;
+		}else if(frequency == 80){
+			coefficient = 8.155;
+		}else{
+			coefficient = 7.312;
 		}
+		flow = frequency / (coefficient * 60);
+//			if(frequency < 50){
+//				if(frequency < 16){
+//					coefficient = frequency/2;  /* 0 -> 16 */
+////					coefficient = 7.512;
+//				}else if(frequency > 32){
+//					coefficient = 0.0054 * frequency + 7.947; /* 32.5 -> 49.3 */
+//				}else{
+//					coefficient = 8.2; /* 16 -> 32.5*/
+//				}
+//			}else{
+//				if(frequency < 82){
+//					if(frequency < 66){
+//						coefficient = -0.0018 * frequency + 8.307; /* 49.3 -> 65.5 */
+//					}else{
+//						coefficient = 0.0008 * frequency + 8.138; /* 65.5 -> 82 */
+//					}
+//				}else{
+//					if(frequency < 91){
+//						coefficient = -0.0834 * frequency + 15.04; /* 82 -> 90.2 */
+//					}else{
+//						coefficient = 7.512; /* > 90.2 */
+//					}
+//				}
+//			}
+//			if(coefficient == 0){
+//				flow = 0;
+//			}else{
+//				flow = frequency / (coefficient * 60) ; /* pulse * 10 = frequency, 7.5 is a parameter number based on datasheet, lit/minute to lit/second */
+//			}
+//			counter10ms = 0;
+			pulse = 0;
+	}
+	if(htim->Instance == TIM4){ /* 10ms */
 		waterFlowPrevious = waterFlowNow;
 		waterFlowNow = flow;
 		volume += ((waterFlowNow + waterFlowPrevious)/2) * 0.01; /* Avarage flow rate per 10ms, then multiply with time to have the volume*/
 	}
 	if(htim->Instance == TIM2){ /* 1s */
+		
+		/* WatchDog Module */
+		
+//		if(sendMessage){
+//				timerSendMessage++;
+//			if(timerSendMessage == 5 * 60){
+//				forceShutdownModule();
+//			}
+//		}
+		
 		/* Send Message */
 		
 		if(!sendMessage){
 			counterSendMessage++;
-			if(counterSendMessage == 16 * 60){
+			if(counterSendMessage == 15 * 60){
 				sendMessage = true;
 				programStage = 1;
 			}
@@ -221,25 +247,22 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
 		
 		if(!batteryCalculate){
 			counterBattery++;
-			if(counterBattery == 61 * 60){
+			if(counterBattery == 20 * 60){
 				batteryCalculate = true;
 			}
-		}else{
-			counterBattery = 0;
 		}
 		
 		/* Reset OLED */
 		
 		if(!resetOLED){
 			counterResetOLED++;
-			if(counterResetOLED == 13 * 60){
+			if(counterResetOLED == 10 * 60){
 				resetOLED = true;
 			}
-		}else{
-			counterResetOLED = 0;
 		}
 		
 		/* Leak Alert - Real*/
+		
 		if(flow > 0){
 			counterWaterLeakage++;
 			if(counterWaterLeakage == 60 * 60){
@@ -407,6 +430,29 @@ void HAL_UARTEx_RxEventCallback(UART_HandleTypeDef *huart, uint16_t Size)
   /* NOTE : This function should not be modified, when the callback is needed,
             the HAL_UARTEx_RxEventCallback can be implemented in the user file.
    */
+}
+
+StatusType forceShutdownModule(){
+	StatusType outputStatus = STATUS_UNKNOWN;
+	passivelyListen = true;
+	uint32_t timer;
+	clearMainBuffer();
+	resetDMAInterrupt();
+	timer = HAL_GetTick();
+	responseReceived = false;
+	commandResponseStatus = STATUS_TIMEOUT;
+	HAL_GPIO_WritePin(GPIOA, GPIO_PIN_9, GPIO_PIN_SET);
+	/* Delay 1000ms (According to Hardware Design Datasheet */
+	HAL_Delay(1000);
+	HAL_GPIO_WritePin(GPIOA, GPIO_PIN_9, GPIO_PIN_RESET);
+	HAL_Delay(200);
+	while(HAL_GetTick() - timer <= 1000){
+		if(responseReceived == true){
+			break;
+		}
+	}
+	outputStatus = commandResponseStatus;
+	return outputStatus;
 }
 
 StatusType turnOffModule(){
@@ -590,7 +636,7 @@ StatusType newMQTT(){
 	StatusType outputStatus = STATUS_UNKNOWN;
 	char command[50];
 	sprintf(command, "AT+CMQNEW=\"%s\",\"%i\",%u,%u", MQTT_SERVER, MQTT_PORT, MQTT_COMMAND_TIMEOUT_MS, MQTT_BUFFER_SIZE);
-	sendCommand(command, RUN_COMMAND_COUNTER_DEFAULT + 1, RUN_COMMAND_TIMEOUT_MS_DEFAULT + 3000);
+	sendCommand(command, RUN_COMMAND_COUNTER_DEFAULT + 1, RUN_COMMAND_TIMEOUT_MS_DEFAULT + 2000);
 	outputStatus = commandResponseStatus;
 	return outputStatus;
 }
@@ -599,7 +645,7 @@ StatusType sendMQTTConnect(){
 	StatusType outputStatus = STATUS_UNKNOWN;
 	char command[50];
 	sprintf(command, "AT+CMQCON=%u,%u,\"%s\",%u,%u,%u",MQTT_ID, MQTT_VERSION, MQTT_CLIENT_ID, MQTT_KEEP_ALIVE_INTERVAL, MQTT_CONNECT_CLEAN_SESSION, MQTT_CONNECT_WILL_FLAG);
-	sendCommand(command, RUN_COMMAND_COUNTER_DEFAULT + 4, RUN_COMMAND_TIMEOUT_MS_DEFAULT + 4000);
+	sendCommand(command, RUN_COMMAND_COUNTER_DEFAULT + 4, RUN_COMMAND_TIMEOUT_MS_DEFAULT + 2000);
 	outputStatus = commandResponseStatus;
 	return outputStatus;
 }
@@ -644,7 +690,7 @@ void moduleFlow(){
 			
 			if(checkSim() != STATUS_SUCCESS){
 				turnOffModule();
-				HAL_Delay(2000);
+				HAL_Delay(1000);
 				turnOnModule();
 				continue;
 			}
@@ -653,7 +699,7 @@ void moduleFlow(){
 //				continue;
 //			}
 			
-			HAL_Delay(2000);
+			HAL_Delay(1000);
 			programStage = 2;	
 			
 		}
@@ -666,7 +712,7 @@ void moduleFlow(){
 			while (tryTimes--){
 				/* AT+CREG */
 				
-				if(readNetworkRegistrationStatus() == STATUS_SUCCESS && networkRegistered == 1){	
+				if(readNetworkRegistrationStatus() == STATUS_SUCCESS){	
 					programStage = 3;
 					break;
 				}
@@ -675,7 +721,7 @@ void moduleFlow(){
 					wakeUpModule();
 					HAL_Delay(1000);
 				}
-				HAL_Delay(5000);
+				HAL_Delay(1000);
 			}
 			if(tryTimes == -1){ 
 				/* Cannot register automatically. Try to register manually 2 times */
@@ -693,7 +739,7 @@ void moduleFlow(){
 						continue;
 					}
 					
-					if(readNetworkRegistrationStatus() == STATUS_SUCCESS && networkRegistered == 1){
+					if(readNetworkRegistrationStatus() == STATUS_SUCCESS){
 						programStage = 3;
 						break;
 					}		
@@ -701,10 +747,12 @@ void moduleFlow(){
 				if(tryManually == -1){
 					turnOffModule();
 					programStage = 1;
-					HAL_Delay(2000);
+					HAL_Delay(1000);
 					break;
 				}
 			}
+			programStage = 3;
+			break;
 		}
 		
 		/* Configure PSM first time only*/
@@ -733,8 +781,6 @@ void moduleFlow(){
 		
 		/* Stage 4 - MQTT */
 		
-		
-		/* Send message on period */
 		int8_t tryMQTT;
 		while(programStage == 4){
 			
@@ -754,7 +800,6 @@ void moduleFlow(){
 				if(newMQTT() == STATUS_SUCCESS){
 					break;
 				}
-				HAL_Delay(1000);
 			}
 			
 			if(tryMQTT == -1){
@@ -772,19 +817,19 @@ void moduleFlow(){
 			int8_t trySend = 4;
 			sprintf(message,"bat:%.1f,vol:%.1f,sig:%u,leak:%u", batteryVoltage, volume, rssi, waterLeak);
 			while(trySend--){
-				if(sendMQTTPub("watermeter1/messages", 1, 0, 0, message) == STATUS_SUCCESS){
+				if(sendMQTTPub("watermeter1/messages", 0, 0, 0, message) == STATUS_SUCCESS){
 					sendMessage = false;
 					break;
 				}else{
 					turnOnModule();
-					continue;
+					continue;   
 				}
 			}
 			
 			/* Failed to send message*/
 			
 			if(trySend == -1){
-				turnOffModule();
+//				turnOffModule();
 				programStage = 1;
 				break;
 			}
@@ -819,21 +864,21 @@ void setUpSSD1306(){
 			SSD1306_GotoXY(0,10);
 			sprintf(bufferflow, "%2.2f", volume);
 			SSD1306_Puts(bufferflow, &Font_16x26, 1);
-//			HAL_ADC_Start_IT(&hadc1);
+
 			SSD1306_GotoXY(56,37);
-			// sprintf(bufferflow, "AC: %2.1f", batteryVoltage);
+			
 //			sprintf(bufferflow, "K: %2.21f", coefficient);
 			SSD1306_Puts("dm3", &Font_11x18, 1);	
 			/* Display Battery Icon */
 			
-			if(batteryVoltage > 2.8){
-				if(batteryVoltage > 3.1){
+			if(batteryVoltage > 3.3){
+				if(batteryVoltage > 3.4){
 					SSD1306_DrawBitmap(112, 0, bat3_icon16x16, 16, 16, 1);
 				}else{
 					SSD1306_DrawBitmap(112, 0, bat2_icon16x16, 16, 16, 1);
 				}
 			}else{
-				if(batteryVoltage < 2.6){
+				if(batteryVoltage < 3.2){
 					SSD1306_DrawBitmap(112, 0, bat0_icon16x16, 16, 16, 1);
 				}else{
 					SSD1306_DrawBitmap(112, 0, bat1_icon16x16, 16, 16, 1);
@@ -908,14 +953,15 @@ int main(void)
   MX_I2C1_Init();
   MX_TIM2_Init();
   MX_TIM4_Init();
+  MX_TIM1_Init();
   /* USER CODE BEGIN 2 */
-	
+	HAL_TIM_Base_Start_IT(&htim1);
 	HAL_TIM_Base_Start_IT(&htim2);
 	HAL_TIM_Base_Start_IT(&htim4);
 	
 	SSD1306_Init();
 	HAL_ADC_Start_IT(&hadc1);
-	
+//	int maxFrequency = frequency;
   /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -928,6 +974,9 @@ int main(void)
 //			sendMessageLowBattery = false;
 //			sendMessageWaterLeak = false;
 //		}
+//		setUpSSD1306();
+//		HAL_GPIO_TogglePin(GPIOC, GPIO_PIN_13);
+//		HAL_Delay(1000);	
 		if(sendMessage){
 			turnOnModule();
 			moduleFlow();		
@@ -943,6 +992,7 @@ int main(void)
 		if(resetOLED){
 			SSD1306_Init();
 			resetOLED = false;
+			counterResetOLED = 0;
 		}
 		if(batteryCalculate){
 			HAL_ADC_Start_IT(&hadc1);
@@ -950,9 +1000,30 @@ int main(void)
 				sendMessage = true;
 			}
 			batteryCalculate = false;
+			counterBattery = 0;
 		}
 		HAL_GPIO_TogglePin(GPIOC, GPIO_PIN_13);
 		HAL_Delay(1000);		
+//		if(frequency > maxFrequency){
+//			maxFrequency = frequency;
+//		}
+//		SSD1306_GotoXY(0,0);
+//		sprintf(bufferflow, "vol: %2.2f", volume);
+//		SSD1306_Puts(bufferflow, &Font_11x18, 1);
+//		SSD1306_GotoXY(0, 15);
+//		sprintf(bufferflow, "K: %2.2f", coefficient);
+//		SSD1306_Puts(bufferflow, &Font_11x18, 1);	
+//		SSD1306_GotoXY(0, 30);
+//		sprintf(bufferflow, "f: %d mf: %d", frequency, maxFrequency);
+//		SSD1306_Puts(bufferflow, &Font_11x18, 1);	
+//		SSD1306_GotoXY(0, 45);
+//		sprintf(bufferflow, "flow: %2.2f", flow);
+//		SSD1306_Puts(bufferflow, &Font_11x18, 1);
+//		SSD1306_UpdateScreen();
+//		HAL_GPIO_TogglePin(GPIOC, GPIO_PIN_13);
+//		HAL_Delay(1000);
+//			sprintf(bufferflow, "K: %2.21f", coefficient);
+			
 		
     /* USER CODE END WHILE */
 
@@ -1089,6 +1160,52 @@ static void MX_I2C1_Init(void)
 }
 
 /**
+  * @brief TIM1 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_TIM1_Init(void)
+{
+
+  /* USER CODE BEGIN TIM1_Init 0 */
+
+  /* USER CODE END TIM1_Init 0 */
+
+  TIM_ClockConfigTypeDef sClockSourceConfig = {0};
+  TIM_MasterConfigTypeDef sMasterConfig = {0};
+
+  /* USER CODE BEGIN TIM1_Init 1 */
+
+  /* USER CODE END TIM1_Init 1 */
+  htim1.Instance = TIM1;
+  htim1.Init.Prescaler = 36000-1;
+  htim1.Init.CounterMode = TIM_COUNTERMODE_UP;
+  htim1.Init.Period = 125-1;
+  htim1.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
+  htim1.Init.RepetitionCounter = 0;
+  htim1.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
+  if (HAL_TIM_Base_Init(&htim1) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sClockSourceConfig.ClockSource = TIM_CLOCKSOURCE_INTERNAL;
+  if (HAL_TIM_ConfigClockSource(&htim1, &sClockSourceConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sMasterConfig.MasterOutputTrigger = TIM_TRGO_RESET;
+  sMasterConfig.MasterSlaveMode = TIM_MASTERSLAVEMODE_DISABLE;
+  if (HAL_TIMEx_MasterConfigSynchronization(&htim1, &sMasterConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN TIM1_Init 2 */
+
+  /* USER CODE END TIM1_Init 2 */
+
+}
+
+/**
   * @brief TIM2 Initialization Function
   * @param None
   * @retval None
@@ -1154,7 +1271,7 @@ static void MX_TIM4_Init(void)
   htim4.Instance = TIM4;
   htim4.Init.Prescaler = 36000-1;
   htim4.Init.CounterMode = TIM_COUNTERMODE_UP;
-  htim4.Init.Period = 2-1;
+  htim4.Init.Period = 20-1;
   htim4.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
   htim4.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
   if (HAL_TIM_Base_Init(&htim4) != HAL_OK)
@@ -1275,7 +1392,7 @@ static void MX_GPIO_Init(void)
   HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
 
   /* EXTI interrupt init*/
-  HAL_NVIC_SetPriority(EXTI0_IRQn, 0, 0);
+  HAL_NVIC_SetPriority(EXTI0_IRQn, 1, 0);
   HAL_NVIC_EnableIRQ(EXTI0_IRQn);
 
   HAL_NVIC_SetPriority(EXTI15_10_IRQn, 0, 0);
