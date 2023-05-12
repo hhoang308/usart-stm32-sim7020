@@ -235,7 +235,7 @@ void SSD1306_DrawFilledCircle(int16_t x0, int16_t y0, int16_t r, SSD1306_COLOR_t
  *           - 0: LCD was not detected on I2C port
  *           - > 0: LCD initialized OK and ready to use
  */
-void ssd1306_I2C_Init();
+void ssd1306_I2C_Init(void);
 
 /**
  * @brief  Writes single byte to slave
@@ -292,9 +292,9 @@ void SSD1306_Stopscroll(void);
 void SSD1306_InvertDisplay (int i);
 
 
-void SSD1306_ON();
+void SSD1306_ON(void);
 
-void SSD1306_OFF();
+void SSD1306_OFF(void);
 
 // clear the display
 

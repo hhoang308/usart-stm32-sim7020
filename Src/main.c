@@ -59,6 +59,7 @@ TIM_HandleTypeDef htim4;
 
 UART_HandleTypeDef huart2;
 DMA_HandleTypeDef hdma_usart2_rx;
+DMA_HandleTypeDef hdma_usart2_tx;
 
 /* USER CODE BEGIN PV */
 
@@ -100,7 +101,7 @@ bool responseReceived;
 volatile bool mqttParemeterConnected = false;
 volatile bool oledButton = false;
 volatile bool waterLeak = false;	
-volatile bool sendMessage = true;
+volatile bool sendMessage = false; /* true to send message immediately*/
 volatile bool resetOLED = false;
 volatile bool batteryCalculate = true;
 
@@ -134,7 +135,7 @@ int counterOLEDDisplay = 0;
 int counterWaterLeakage = 0;
 int counterResetOLED = 0;
 int counterBattery = 0;
-int counterSendMessage = -1;
+int counterSendMessage = 15*60 - 5*60 - 1;
 int counterWaterRemainUnleak = 0;
 
 /**/
@@ -158,13 +159,13 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
 	if(htim->Instance == TIM1){ /* 62.5 ms */
 		frequency = pulse * 16;
 		if(frequency == 16){
-			coefficient = 8.1;
+			coefficient = 12.0208; // 8.1
 		}else if(frequency == 32){
-			coefficient = 8.109;
+			coefficient = 7.831; // 8.109
 		}else if(frequency == 48){
-			coefficient = 8.2062;
+			coefficient = 8.1062;
 		}else if(frequency == 64){
-			coefficient = 8.1608;
+			coefficient = 8.0608;
 		}else if(frequency == 80){
 			coefficient = 8.155;
 		}else{
@@ -328,10 +329,12 @@ void clearMainBuffer() {
 	newPos = 0;
 }
 
-void sendCommand(char* command, uint8_t maxCount, uint32_t timeout){
+void sendCommand(char command[50], uint8_t maxCount, uint32_t timeout){
 	uint8_t counter = 0;
 	uint32_t timer;
-	
+	char sentCommand[50];
+	strcpy(sentCommand, command);
+	strcat(sentCommand, "\r\n");
 	while(counter++ < maxCount){
 		clearMainBuffer();
 		if(!strcmp(command,"AT+CPOWD=1")){
@@ -341,8 +344,9 @@ void sendCommand(char* command, uint8_t maxCount, uint32_t timeout){
 		timer = HAL_GetTick();
 		responseReceived = false;
 		commandResponseStatus = STATUS_TIMEOUT;
-		HAL_UART_Transmit(&huart2, (uint8_t *) command, (uint16_t) strlen(command), timeout);
-		HAL_UART_Transmit(&huart2, (uint8_t *) "\r\n", (uint16_t) strlen("\r\n"), timeout);
+//		strcat(command, "\r\n");
+		HAL_UART_Transmit_DMA(&huart2, (uint8_t *) sentCommand, (uint16_t) strlen(sentCommand));
+//		HAL_UART_Transmit_DMA(&huart2, (uint8_t *) "\r\n", (uint16_t) strlen("\r\n"));
 		while(HAL_GetTick() - timer <= timeout){
 			if(responseReceived == true){
 				break;
@@ -865,12 +869,12 @@ void setUpSSD1306(){
 			turnOnSSD1306();
 			SSD1306_GotoXY(0,10);
 			sprintf(bufferflow, "%2.2f", volume);
-			SSD1306_Puts(bufferflow, &Font_16x26, 1);
+			SSD1306_Puts(bufferflow, &Font_16x26, SSD1306_COLOR_WHITE);
 
 			SSD1306_GotoXY(56,37);
 			
 //			sprintf(bufferflow, "K: %2.21f", coefficient);
-			SSD1306_Puts("dm3", &Font_11x18, 1);	
+			SSD1306_Puts("dm3", &Font_11x18, SSD1306_COLOR_WHITE);	
 			/* Display Battery Icon */
 			
 			if(batteryVoltage > 3.3){
@@ -1004,8 +1008,10 @@ int main(void)
 			batteryCalculate = false;
 			counterBattery = 0;
 		}
-		HAL_GPIO_TogglePin(GPIOC, GPIO_PIN_13);
 		HAL_Delay(1000);		
+		
+//		sendCommand("AT", RUN_COMMAND_COUNTER_DEFAULT, RUN_COMMAND_TIMEOUT_MS_DEFAULT);
+//		HAL_Delay(1000);
 //		if(frequency > maxFrequency){
 //			maxFrequency = frequency;
 //		}
@@ -1343,6 +1349,9 @@ static void MX_DMA_Init(void)
   /* DMA1_Channel6_IRQn interrupt configuration */
   HAL_NVIC_SetPriority(DMA1_Channel6_IRQn, 0, 0);
   HAL_NVIC_EnableIRQ(DMA1_Channel6_IRQn);
+  /* DMA1_Channel7_IRQn interrupt configuration */
+  HAL_NVIC_SetPriority(DMA1_Channel7_IRQn, 0, 0);
+  HAL_NVIC_EnableIRQ(DMA1_Channel7_IRQn);
 
 }
 
@@ -1356,23 +1365,12 @@ static void MX_GPIO_Init(void)
   GPIO_InitTypeDef GPIO_InitStruct = {0};
 
   /* GPIO Ports Clock Enable */
-  __HAL_RCC_GPIOC_CLK_ENABLE();
   __HAL_RCC_GPIOD_CLK_ENABLE();
   __HAL_RCC_GPIOA_CLK_ENABLE();
   __HAL_RCC_GPIOB_CLK_ENABLE();
 
   /*Configure GPIO pin Output Level */
-  HAL_GPIO_WritePin(GPIOC, GPIO_PIN_13, GPIO_PIN_RESET);
-
-  /*Configure GPIO pin Output Level */
   HAL_GPIO_WritePin(GPIOA, GPIO_PIN_9, GPIO_PIN_RESET);
-
-  /*Configure GPIO pin : PC13 */
-  GPIO_InitStruct.Pin = GPIO_PIN_13;
-  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
-  GPIO_InitStruct.Pull = GPIO_NOPULL;
-  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
-  HAL_GPIO_Init(GPIOC, &GPIO_InitStruct);
 
   /*Configure GPIO pin : PB0 */
   GPIO_InitStruct.Pin = GPIO_PIN_0;
